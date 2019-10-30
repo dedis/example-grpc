@@ -13,7 +13,7 @@ import (
 	"math/big"
 	"net"
 	"os"
-	"sync"
+	"os/signal"
 	"time"
 
 	"go.dedis.ch/example-grpc/count"
@@ -58,8 +58,6 @@ func makeCertificate() *tls.Certificate {
 
 func main() {
 	roster := make(overlay.Roster, 5)
-	wg := sync.WaitGroup{}
-	wg.Add(5)
 
 	for i := range roster {
 		ident := overlay.Identity{
@@ -102,10 +100,10 @@ func main() {
 			if err := overlay.Serve(lis); err != nil {
 				log.Fatalf("failed to serve: %v", err)
 			}
-
-			wg.Done()
 		}()
 	}
 
-	wg.Wait()
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt)
+	<-ch
 }
