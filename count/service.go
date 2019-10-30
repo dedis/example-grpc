@@ -7,7 +7,7 @@ import (
 	"go.dedis.ch/example-grpc/overlay"
 )
 
-//go:generate protoc -I ./count --go_out=plugins=grpc:./count ./count/count.proto
+//go:generate protoc -I ./ --go_out=plugins=grpc:./ ./count.proto
 
 const (
 	// AggregationProtocolName is the name of the count aggregation.

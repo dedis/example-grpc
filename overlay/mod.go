@@ -16,7 +16,7 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
-//go:generate protoc -I ./overlay --go_out=plugins=grpc:./overlay ./overlay/overlay.proto
+//go:generate protoc -I ./ --go_out=plugins=grpc:./ ./overlay.proto
 
 // Identity is the private identity of the nodes.
 type Identity struct {
