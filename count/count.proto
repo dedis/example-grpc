@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package count;
+
+service Count {
+    rpc Count(CountRequest) returns (CountResponse) {}
+}
+
+message CountRequest {
+    int64 value = 1;
+}
+
+message CountResponse {
+    int64 value = 1;
+    repeated bytes certificates = 2;
+}
+
+message Counter {
+    int64 value = 1;
+}
+
+message Peer {
+    string port = 1;
+    bytes certificate = 2;
+}

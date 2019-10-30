@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package overlay;
+
+import "google/protobuf/any.proto";
+
+service Overlay {
+    rpc sendAggregateAnnouncement(AggregateAnnouncement) returns (AggregateResponse) {}
+
+    rpc sendCollectionRequest(CollectionRequest) returns (CollectionResponse) {}
+}
+
+message Tree {
+    int64 root = 1;
+    int64 k = 2;
+    int64 n = 3;
+}
+
+message AggregateAnnouncement {
+    string id = 1;
+    Tree tree = 2;
+    google.protobuf.Any message = 3;
+}
+
+message AggregateResponse {
+    google.protobuf.Any message = 1;
+}
+
+message CollectionRequest {
+    string id = 1;
+    Tree tree = 2;
+}
+
+message CollectionResponse {
+    repeated google.protobuf.Any message = 1;
+}
