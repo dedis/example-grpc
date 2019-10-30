@@ -14,7 +14,16 @@ func (t Tree) ChildrenOf(pos int) []int {
 
 	for i, j := range nodes[:len(nodes)-1] {
 		if j == pos {
-			return []int{nodes[i+1]}
+			firstIndex := int(t.GetK())*i + 1
+			if firstIndex >= len(nodes) {
+				return []int{}
+			}
+			lastIndex := firstIndex + int(t.GetK())
+			if lastIndex >= len(nodes) {
+				lastIndex = firstIndex + len(nodes) - firstIndex
+			}
+
+			return nodes[firstIndex:lastIndex]
 		}
 	}
 

@@ -144,7 +144,7 @@ func (o *Overlay) Aggregate(name string) (proto.Message, error) {
 
 	msg := &AggregateAnnouncement{
 		Id:   name,
-		Tree: &Tree{N: 5, K: 2, Root: int64(o.getPosition())},
+		Tree: &Tree{N: 5, K: 3, Root: int64(o.getPosition())},
 		Message: &any.Any{
 			TypeUrl: "go.dedis.ch/eonet/" + proto.MessageName(ann),
 			Value:   serialized,
