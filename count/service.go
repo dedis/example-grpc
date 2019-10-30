@@ -1,4 +1,4 @@
-package count // import "go.dedis.ch/eonet/count"
+package count
 
 import (
 	context "context"

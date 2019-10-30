@@ -1,4 +1,4 @@
-package main // import "go.dedis.ch/eonet/client"
+package main
 
 import (
 	"context"
