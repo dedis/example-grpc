@@ -17,4 +17,7 @@ $ cd dist
 $ python -m SimpleHTTPServer
 ```
 
-Navigate to http://localhost:8000 and check the console for the `CountResponse`
+Navigate to https://localhost:4000 to accept the self signed certificate of the
+web proxy for this specific session.
+
+Now, navigate to http://localhost:8000 and check the console for the `CountResponse`
