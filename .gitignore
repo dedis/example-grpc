@@ -1,2 +1,3 @@
 **/*.pb.go
 cert.pem
+**/node_modules

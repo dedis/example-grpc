@@ -21,7 +21,7 @@ import (
 )
 
 func makeCertificate() *tls.Certificate {
-	priv, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		log.Fatalf("Couldn't generate the private key: %+v", err)
 	}
@@ -99,6 +99,13 @@ func main() {
 			log.Printf("Server %s is starting...\n", lis.Addr().String())
 			if err := overlay.Serve(lis); err != nil {
 				log.Fatalf("failed to serve: %v", err)
+			}
+		}()
+
+		go func() {
+			log.Printf("Proxy server %s is starting...\n", overlay.WebProxy.Addr)
+			if err := overlay.WebProxy.ListenAndServeTLS("", ""); err != nil {
+				log.Fatalf("failed to start https proxy for grpc-web: %v", err)
 			}
 		}()
 	}

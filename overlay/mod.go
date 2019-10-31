@@ -7,11 +7,14 @@ import (
 	"errors"
 	fmt "fmt"
 	"log"
+	"net/http"
+	"strconv"
 	"time"
 
 	proto "github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes"
 	any "github.com/golang/protobuf/ptypes/any"
+	"github.com/improbable-eng/grpc-web/go/grpcweb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -52,6 +55,7 @@ type Collection interface {
 // Overlay is the network abstraction to communicate with the roster.
 type Overlay struct {
 	*grpc.Server
+	WebProxy *http.Server
 
 	identity Identity
 	roster   Roster
@@ -64,9 +68,43 @@ type Overlay struct {
 func NewOverlay(ident Identity) *Overlay {
 	creds := credentials.NewServerTLSFromCert(ident.Certificate)
 	srv := grpc.NewServer(grpc.Creds(creds))
+	wrappedGrpc := grpcweb.WrapServer(srv, grpcweb.WithOriginFunc(func(origin string) bool {
+		fmt.Println("origin", origin)
+		return true
+	}))
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{
+			*ident.Certificate,
+		},
+	}
+
+	port, err := strconv.Atoi(ident.Port[1:])
+	if err != nil {
+		log.Fatalf("error parsing port: %v\n", err)
+	}
+	port += 1000
+	httpsServer := &http.Server{
+		Addr: fmt.Sprintf(":%d", port),
+		Handler: http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+			if wrappedGrpc.IsGrpcWebRequest(req) {
+				wrappedGrpc.ServeHTTP(res, req)
+				return
+			}
+			if req.Method == http.MethodOptions && req.Header.Get("Access-Control-Request-Method") != "" {
+				headers := res.Header()
+				headers.Set("Access-Control-Allow-Origin", "*")
+				headers.Set("Access-Control-Allow-Headers", "*")
+				res.WriteHeader(http.StatusOK)
+			} else {
+				http.DefaultServeMux.ServeHTTP(res, req)
+			}
+		}),
+		TLSConfig: tlsConfig,
+	}
 
 	overlay := &Overlay{
 		Server:   srv,
+		WebProxy: httpsServer,
 		identity: ident,
 
 		aggregators: make(map[string]Aggregation),
