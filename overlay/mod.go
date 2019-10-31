@@ -136,19 +136,15 @@ func (o *Overlay) Aggregate(name string) (proto.Message, error) {
 		return nil, errors.New("aggregation not found")
 	}
 
-	ann := agg.Announce()
-	serialized, err := proto.Marshal(ann)
+	ann, err := ptypes.MarshalAny(agg.Announce())
 	if err != nil {
 		return nil, err
 	}
 
 	msg := &AggregateAnnouncement{
-		Id:   name,
-		Tree: &Tree{N: 5, K: 3, Root: int64(o.getPosition())},
-		Message: &any.Any{
-			TypeUrl: "go.dedis.ch/eonet/" + proto.MessageName(ann),
-			Value:   serialized,
-		},
+		Id:      name,
+		Tree:    &Tree{N: 5, K: 3, Root: int64(o.getPosition())},
+		Message: ann,
 	}
 	replies, err := o.sendAggregate(msg)
 	if err != nil {
@@ -232,16 +228,12 @@ func (o *Overlay) sendCollect(name string, msg *CollectionRequest) ([]*any.Any, 
 		replies = append(replies, reply.GetMessage()...)
 	}
 
-	own := collector.Prepare()
-	ownBuf, err := proto.Marshal(own)
+	own, err := ptypes.MarshalAny(collector.Prepare())
 	if err != nil {
 		return nil, err
 	}
 
-	replies = append(replies, &any.Any{
-		TypeUrl: "go.dedis.ch/eonet/" + proto.MessageName(own),
-		Value:   ownBuf,
-	})
+	replies = append(replies, own)
 
 	return replies, nil
 }
@@ -265,19 +257,15 @@ func (o *overlayService) SendAggregateAnnouncement(ctx context.Context, in *Aggr
 		return nil, err
 	}
 
-	nextAnn := agg.Spread(da.Message)
-	serialized, err := proto.Marshal(nextAnn)
+	nextAnn, err := ptypes.MarshalAny(agg.Spread(da.Message))
 	if err != nil {
 		return nil, err
 	}
 
 	msg := &AggregateAnnouncement{
-		Id:   in.GetId(),
-		Tree: in.GetTree(),
-		Message: &any.Any{
-			TypeUrl: "go.dedis.ch/eonet/" + proto.MessageName(nextAnn),
-			Value:   serialized,
-		},
+		Id:      in.GetId(),
+		Tree:    in.GetTree(),
+		Message: nextAnn,
 	}
 
 	replies, err := o.Overlay.sendAggregate(msg)
@@ -285,18 +273,12 @@ func (o *overlayService) SendAggregateAnnouncement(ctx context.Context, in *Aggr
 		return nil, err
 	}
 
-	r := agg.Process(replies)
-	serialized, err = proto.Marshal(r)
+	r, err := ptypes.MarshalAny(agg.Process(replies))
 	if err != nil {
 		return nil, err
 	}
 
-	return &AggregateResponse{
-		Message: &any.Any{
-			TypeUrl: "go.dedis.ch/eonet/" + proto.MessageName(r),
-			Value:   serialized,
-		},
-	}, nil
+	return &AggregateResponse{Message: r}, nil
 }
 
 func (o *overlayService) SendCollectionRequest(ctx context.Context, in *CollectionRequest) (*CollectionResponse, error) {
