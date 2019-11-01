@@ -1,31 +1,22 @@
 package overlay
 
-func (t Tree) ChildrenOf(pos int) []int {
-	nodes := make([]int, t.GetN())
-	for i := range nodes {
-		if i == 0 {
-			nodes[i] = int(t.GetRoot())
-		} else if i < int(t.GetRoot()) {
-			nodes[i] = i - 1
-		} else {
-			nodes[i] = i
-		}
-	}
+func (t *Tree) getChildren(parent string) []string {
+	n := len(t.GetAddresses())
 
-	for i, j := range nodes[:len(nodes)-1] {
-		if j == pos {
+	for i, addr := range t.GetAddresses() {
+		if parent == addr {
 			firstIndex := int(t.GetK())*i + 1
-			if firstIndex >= len(nodes) {
-				return []int{}
+			if firstIndex >= n {
+				return []string{}
 			}
 			lastIndex := firstIndex + int(t.GetK())
-			if lastIndex >= len(nodes) {
-				lastIndex = firstIndex + len(nodes) - firstIndex
+			if lastIndex >= n {
+				lastIndex = n
 			}
 
-			return nodes[firstIndex:lastIndex]
+			return t.GetAddresses()[firstIndex:lastIndex]
 		}
 	}
 
-	return []int{}
+	return []string{}
 }

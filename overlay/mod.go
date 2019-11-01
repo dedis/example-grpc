@@ -2,75 +2,83 @@ package overlay
 
 import (
 	context "context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
 	fmt "fmt"
 	"log"
+	"math/big"
+	"net"
 	"time"
 
-	proto "github.com/golang/protobuf/proto"
-	"github.com/golang/protobuf/ptypes"
-	any "github.com/golang/protobuf/ptypes/any"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 )
 
 //go:generate protoc -I ./ --go_out=plugins=grpc:./ ./overlay.proto
 
-// Identity is the private identity of the nodes.
-type Identity struct {
-	Port        string
-	Certificate *tls.Certificate
-}
-
-// Peer is the public identity of the nodes.
 type Peer struct {
-	Port        string
+	Address     string
 	Certificate *x509.Certificate
 }
 
-// Roster is the set of nodes known.
 type Roster []Peer
 
-// Aggregation is the interface to implement to register a protocol that
-// will contact all the nodes and aggregate their replies.
-type Aggregation interface {
-	Announce() proto.Message
+func (ro Roster) makeTree(root Peer) *Tree {
+	t := &Tree{
+		Addresses: make([]string, len(ro)),
+		K:         2,
+	}
 
-	Spread(proto.Message) proto.Message
+	for i, peer := range ro {
+		if peer.Address == root.Address {
+			t.Addresses[0] = root.Address
+		} else if t.Addresses[0] == "" {
+			t.Addresses[i+1] = peer.Address
+		} else {
+			t.Addresses[i] = peer.Address
+		}
+	}
 
-	Process([]proto.Message) proto.Message
-}
-
-// Collection is the interface to implement to register a protocol that
-// will contact all the nodes and gather data for all of them.
-type Collection interface {
-	Prepare() proto.Message
+	return t
 }
 
 // Overlay is the network abstraction to communicate with the roster.
 type Overlay struct {
 	*grpc.Server
 
-	identity Identity
-	roster   Roster
+	cert      *tls.Certificate
+	addr      string
+	StartChan chan struct{}
+
+	// neighbours contains the certificate and details about known peers.
+	neighbours map[string]Peer
 
 	aggregators map[string]Aggregation
-	collectors  map[string]Collection
 }
 
 // NewOverlay returns a new overlay.
-func NewOverlay(ident Identity) *Overlay {
-	creds := credentials.NewServerTLSFromCert(ident.Certificate)
-	srv := grpc.NewServer(grpc.Creds(creds))
+func NewOverlay(addr string) *Overlay {
+	cert := makeCertificate()
+
+	ta := credentials.NewTLS(&tls.Config{
+		Certificates: []tls.Certificate{*cert},
+		ClientAuth:   tls.RequireAnyClientCert,
+	})
+	srv := grpc.NewServer(grpc.Creds(ta))
 
 	overlay := &Overlay{
-		Server:   srv,
-		identity: ident,
-
+		Server:      srv,
+		cert:        cert,
+		addr:        addr,
+		StartChan:   make(chan struct{}),
+		neighbours:  make(map[string]Peer),
 		aggregators: make(map[string]Aggregation),
-		collectors:  make(map[string]Collection),
 	}
 
 	RegisterOverlayServer(srv, &overlayService{Overlay: overlay})
@@ -80,162 +88,108 @@ func NewOverlay(ident Identity) *Overlay {
 
 func (o *Overlay) GetPeer() Peer {
 	return Peer{
-		Port:        o.identity.Port,
-		Certificate: o.identity.Certificate.Leaf,
+		Address:     o.addr,
+		Certificate: o.cert.Leaf,
 	}
 }
 
-func (o *Overlay) SetRoster(ro Roster) {
-	o.roster = ro
+func (o *Overlay) GetIdentity(service string) *Identity {
+	return &Identity{
+		Addr: o.addr,
+	}
+}
+
+func (o *Overlay) AddNeighbour(peer Peer) error {
+	o.neighbours[peer.Address] = peer
+	return nil
 }
 
 func (o *Overlay) RegisterAggregation(name string, impl Aggregation) {
 	o.aggregators[name] = impl
 }
 
-func (o *Overlay) RegisterCollection(name string, impl Collection) {
-	o.collectors[name] = impl
-}
-
-func (o *Overlay) getPosition() int {
-	for i, ident := range o.roster {
-		if ident.Port == o.identity.Port {
-			return i
-		}
+func (o *Overlay) getConnection(addr string) (*grpc.ClientConn, error) {
+	neighbour, ok := o.neighbours[addr]
+	if !ok {
+		return nil, errors.New("couldn't find the neighbour")
 	}
 
-	return -1
+	pool := x509.NewCertPool()
+	pool.AddCert(neighbour.Certificate)
+
+	ta := credentials.NewTLS(&tls.Config{
+		Certificates: []tls.Certificate{*o.cert},
+		RootCAs:      pool,
+	})
+
+	// Connecting using TLS and the distant server certificate as the root.
+	return grpc.Dial(addr, grpc.WithTransportCredentials(ta))
 }
 
-func (o *Overlay) getChildren(tree *Tree) []*grpc.ClientConn {
-	children := tree.ChildrenOf(o.getPosition())
-	clients := make([]*grpc.ClientConn, len(children))
-	for i, idx := range children {
+func (o *Overlay) getConnections(addrs []string) []*grpc.ClientConn {
+	peers := make([]*grpc.ClientConn, 0, len(addrs))
+	for _, addr := range addrs {
+		neighbour, ok := o.neighbours[addr]
+		if !ok {
+			log.Printf("Couldn't find neighbour [%s]\n", addr)
+			continue
+		}
+
 		pool := x509.NewCertPool()
-		pool.AddCert(o.roster[idx].Certificate)
+		pool.AddCert(neighbour.Certificate)
 
-		creds := credentials.NewClientTLSFromCert(pool, "")
+		ta := credentials.NewTLS(&tls.Config{
+			Certificates: []tls.Certificate{*o.cert},
+			RootCAs:      pool,
+		})
 
-		address := fmt.Sprintf("localhost%s", o.roster[idx].Port)
-
-		// Connection using TLS.
-		conn, err := grpc.Dial(address, grpc.WithTransportCredentials(creds))
+		// Connecting using TLS and the distant server certificate as the root.
+		conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(ta))
 		if err != nil {
-			log.Fatalf("did not connect: %v", err)
+			log.Printf("did not connect: %+v", err)
+		} else {
+			// Add the neighbour only if we can dial.
+			peers = append(peers, conn)
 		}
-
-		clients[i] = conn
 	}
-
-	return clients
+	return peers
 }
 
-func (o *Overlay) Aggregate(name string) (proto.Message, error) {
-	agg := o.aggregators[name]
-	if agg == nil {
-		return nil, errors.New("aggregation not found")
-	}
-
-	ann, err := ptypes.MarshalAny(agg.Announce())
+// Serve starts the overlay to listen on the address.
+func (o *Overlay) Serve() error {
+	lis, err := net.Listen("tcp", o.addr)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("failed to listen: %v", err)
 	}
 
-	msg := &AggregateAnnouncement{
-		Id:      name,
-		Tree:    &Tree{N: 5, K: 3, Root: int64(o.getPosition())},
-		Message: ann,
-	}
-	replies, err := o.sendAggregate(msg)
-	if err != nil {
-		return nil, err
+	log.Printf("Server [%v] is starting...\n", o.addr)
+	close(o.StartChan)
+
+	if err := o.Server.Serve(lis); err != nil {
+		return fmt.Errorf("failed to serve: %v", err)
 	}
 
-	final := agg.Process(replies)
-
-	return final, nil
+	return nil
 }
 
-func (o *Overlay) sendAggregate(msg *AggregateAnnouncement) ([]proto.Message, error) {
-	replies := make([]proto.Message, 0)
-	for _, conn := range o.getChildren(msg.Tree) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
+func (o *Overlay) peerFromContext(ctx context.Context) (Peer, error) {
+	client, ok := peer.FromContext(ctx)
+	if !ok {
+		return Peer{}, errors.New("unknown client")
+	}
 
-		client := NewOverlayClient(conn)
-		defer conn.Close()
-
-		reply, err := client.SendAggregateAnnouncement(ctx, msg)
-		if err != nil {
-			return nil, err
+	info := client.AuthInfo.(credentials.TLSInfo)
+	for _, cert := range info.State.PeerCertificates {
+		// TODO: verify the client certificate as we only want authentication
+		// for protocols so we don't enforce the client certificate to be correct.
+		for _, neighbour := range o.neighbours {
+			if neighbour.Certificate.Equal(cert) {
+				return neighbour, nil
+			}
 		}
-
-		var da ptypes.DynamicAny
-		err = ptypes.UnmarshalAny(reply.GetMessage(), &da)
-		if err != nil {
-			return nil, err
-		}
-
-		replies = append(replies, da.Message)
-	}
-	return replies, nil
-}
-
-func (o *Overlay) Collect(name string) ([]proto.Message, error) {
-	msg := &CollectionRequest{
-		Id:   name,
-		Tree: &Tree{N: 5, K: 2, Root: int64(o.getPosition())},
 	}
 
-	replies, err := o.sendCollect(name, msg)
-	if err != nil {
-		return nil, err
-	}
-
-	messages := make([]proto.Message, len(replies))
-	var da ptypes.DynamicAny
-	for i, m := range replies {
-		err = ptypes.UnmarshalAny(m, &da)
-		if err != nil {
-			return nil, err
-		}
-
-		messages[i] = da.Message
-	}
-
-	return messages, nil
-}
-
-func (o *Overlay) sendCollect(name string, msg *CollectionRequest) ([]*any.Any, error) {
-	collector := o.collectors[name]
-	if collector == nil {
-		return nil, errors.New("collector not found")
-	}
-
-	replies := make([]*any.Any, 0)
-	for _, conn := range o.getChildren(msg.Tree) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-
-		client := NewOverlayClient(conn)
-		defer conn.Close()
-
-		reply, err := client.SendCollectionRequest(ctx, msg)
-		if err != nil {
-			return nil, err
-		}
-
-		replies = append(replies, reply.GetMessage()...)
-	}
-
-	own, err := ptypes.MarshalAny(collector.Prepare())
-	if err != nil {
-		return nil, err
-	}
-
-	replies = append(replies, own)
-
-	return replies, nil
+	return Peer{}, errors.New("unauthenticated client")
 }
 
 // gRPC service for the overlay.
@@ -245,47 +199,38 @@ type overlayService struct {
 	Overlay *Overlay
 }
 
-func (o *overlayService) SendAggregateAnnouncement(ctx context.Context, in *AggregateAnnouncement) (*AggregateResponse, error) {
-	agg := o.Overlay.aggregators[in.GetId()]
-	if agg == nil {
-		return nil, errors.New("aggregation not found")
-	}
-
-	var da ptypes.DynamicAny
-	err := ptypes.UnmarshalAny(in.GetMessage(), &da)
+func makeCertificate() *tls.Certificate {
+	priv, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 	if err != nil {
-		return nil, err
+		log.Fatalf("Couldn't generate the private key: %+v", err)
 	}
 
-	nextAnn, err := ptypes.MarshalAny(agg.Spread(da.Message))
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName: "localhost",
+		},
+		NotBefore: time.Now(),
+		NotAfter:  time.Now().Add(time.Hour * 24 * 180),
+
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+
+	buf, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
 	if err != nil {
-		return nil, err
+		log.Fatalf("Couldn't create the certificate: %+v", err)
 	}
 
-	msg := &AggregateAnnouncement{
-		Id:      in.GetId(),
-		Tree:    in.GetTree(),
-		Message: nextAnn,
-	}
-
-	replies, err := o.Overlay.sendAggregate(msg)
+	cert, err := x509.ParseCertificate(buf)
 	if err != nil {
-		return nil, err
+		log.Fatalf("Couldn't parse the certificate: %+v", err)
 	}
 
-	r, err := ptypes.MarshalAny(agg.Process(replies))
-	if err != nil {
-		return nil, err
+	return &tls.Certificate{
+		Certificate: [][]byte{buf},
+		PrivateKey:  priv,
+		Leaf:        cert,
 	}
-
-	return &AggregateResponse{Message: r}, nil
-}
-
-func (o *overlayService) SendCollectionRequest(ctx context.Context, in *CollectionRequest) (*CollectionResponse, error) {
-	replies, err := o.Overlay.sendCollect(in.GetId(), in)
-	if err != nil {
-		return nil, err
-	}
-
-	return &CollectionResponse{Message: replies}, nil
 }

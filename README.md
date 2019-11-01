@@ -5,15 +5,21 @@ for the network layer.
 
 ## How to
 
-Servers can be run using the command:
+Generate code from proto files:
 ```
-make
+make generate
 ```
 
-And a client request can be made with:
+Run the tests:
 ```
-go run ./client/client.go
+make test
 ```
+
+## Aggregation
+
+The overlay provides an aggregation protocol using a tree-based topology. When
+defined, the protocol will take care of gathering the public identity of each
+node.
 
 ## Architecture
 

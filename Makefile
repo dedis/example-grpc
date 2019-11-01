@@ -1,7 +1,7 @@
 generate:
 	go generate ./...
 
-run: generate
-	go run ./server/server.go
+test: generate
+	go test -count=1 -v ./...
 
 .DEFAULT_GOAL := run

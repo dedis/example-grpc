@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package skipchain;
+
+// SigningRequest is the announcement sent to the nodes when
+// a signature is required.
+message SigningRequest {
+    bytes message = 1;
+}
+
+// SigningResponse is the response of a signature aggregation.
+message SigningResponse {
+    bytes signature = 2;
+}
+
+// BdnIdentity represents the public identity for the node
+// w.r.t. the skipchain engine.
+message BdnIdentity {
+    bytes publicKey = 1;
+}
