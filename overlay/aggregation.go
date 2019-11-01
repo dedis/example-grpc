@@ -34,8 +34,12 @@ func (o *Overlay) Aggregate(name string, ro Roster, in proto.Message) (proto.Mes
 		return nil, errors.New("aggregation not found")
 	}
 
+	root, err := o.GetPeer()
+	if err != nil {
+		return nil, fmt.Errorf("couldn't get the root: %v", err)
+	}
+
 	idents := []*Identity{}
-	var err error
 	if aggI, ok := agg.(AggregationWithIdentity); ok {
 		// The procool implements the identity support so the leader
 		// will gather the identities and send them back with the
@@ -43,7 +47,7 @@ func (o *Overlay) Aggregate(name string, ro Roster, in proto.Message) (proto.Mes
 		// TODO: improvement to trigger this only when necessary.
 		req := &IdentityRequest{
 			Protocol: name,
-			Tree:     ro.makeTree(o.GetPeer()),
+			Tree:     ro.makeTree(root),
 		}
 
 		// Each protocol can implement its own public identity.
@@ -66,7 +70,7 @@ func (o *Overlay) Aggregate(name string, ro Roster, in proto.Message) (proto.Mes
 
 	req := &AggregateRequest{
 		Protocol:   name,
-		Tree:       ro.makeTree(o.GetPeer()),
+		Tree:       ro.makeTree(root),
 		Identities: idents,
 		Message:    msg,
 	}
@@ -80,7 +84,7 @@ func (o *Overlay) Aggregate(name string, ro Roster, in proto.Message) (proto.Mes
 }
 
 func (o *Overlay) sendIdentityRequest(msg *IdentityRequest, ident proto.Message) ([]*Identity, error) {
-	children := msg.GetTree().getChildren(o.addr)
+	children := msg.GetTree().getChildren(o.listener.Addr().String())
 	idents := make([]*Identity, 0, len(children))
 	for _, conn := range o.getConnections(children) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -103,7 +107,7 @@ func (o *Overlay) sendIdentityRequest(msg *IdentityRequest, ident proto.Message)
 	}
 
 	idents = append(idents, &Identity{
-		Addr:      o.addr,
+		Addr:      o.listener.Addr().String(),
 		Signature: []byte{},
 		Value:     value,
 	})
@@ -151,7 +155,7 @@ func (o *Overlay) sendAggregateRequest(msg *AggregateRequest, agg Aggregation) (
 		aggI.StoreIdentities(store)
 	}
 
-	children := msg.GetTree().getChildren(o.addr)
+	children := msg.GetTree().getChildren(o.listener.Addr().String())
 	replies := make([]proto.Message, 0, len(children))
 	for _, conn := range o.getConnections(children) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)

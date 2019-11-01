@@ -1,7 +1,6 @@
 package overlay
 
 import (
-	fmt "fmt"
 	"testing"
 
 	proto "github.com/golang/protobuf/proto"
@@ -27,31 +26,33 @@ func (a testAggregation) Process(ann proto.Message, replies []proto.Message) (pr
 func TestOverlay_SimpleAggregation(t *testing.T) {
 	n := 5
 	servers := make([]*Overlay, n)
-	roster := make([]Peer, 5)
 	for i := range servers {
-		o := NewOverlay(fmt.Sprintf("localhost:300%d", i))
+		o := NewOverlay("localhost:0")
 		o.RegisterAggregation(testAggregationName, testAggregation{})
 		servers[i] = o
-		roster[i] = o.GetPeer()
-
-		if i > 0 {
-			for _, srv := range servers[:i] {
-				require.NoError(t, srv.AddNeighbour(o.GetPeer()))
-				require.NoError(t, o.AddNeighbour(srv.GetPeer()))
-			}
-		}
 
 		go func() {
 			err := o.Serve()
 			require.NoError(t, err)
 		}()
+
+		<-o.StartChan
 	}
 
-	for _, srv := range servers {
-		<-srv.StartChan
+	roster := make([]Peer, n)
+	for i, srv := range servers {
+		curr, err := srv.GetPeer()
+		require.NoError(t, err)
+		roster[i] = curr
+		for _, other := range servers[i+1:] {
+			peer, err := other.GetPeer()
+			require.NoError(t, err)
+			require.NoError(t, srv.AddNeighbour(peer))
+			require.NoError(t, other.AddNeighbour(curr))
+		}
 	}
 
 	agg, err := servers[0].Aggregate(testAggregationName, roster, &TestMessage{Value: 0})
 	require.NoError(t, err)
-	require.Equal(t, int64(5), agg.(*TestMessage).GetValue())
+	require.Equal(t, int64(n), agg.(*TestMessage).GetValue())
 }

@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"errors"
 	fmt "fmt"
 	"log"
@@ -54,6 +53,7 @@ type Overlay struct {
 
 	cert      *tls.Certificate
 	addr      string
+	listener  net.Listener
 	StartChan chan struct{}
 
 	// neighbours contains the certificate and details about known peers.
@@ -76,6 +76,7 @@ func NewOverlay(addr string) *Overlay {
 		Server:      srv,
 		cert:        cert,
 		addr:        addr,
+		listener:    nil,
 		StartChan:   make(chan struct{}),
 		neighbours:  make(map[string]Peer),
 		aggregators: make(map[string]Aggregation),
@@ -86,17 +87,25 @@ func NewOverlay(addr string) *Overlay {
 	return overlay
 }
 
-func (o *Overlay) GetPeer() Peer {
-	return Peer{
-		Address:     o.addr,
-		Certificate: o.cert.Leaf,
+func (o *Overlay) GetPeer() (Peer, error) {
+	if o.listener == nil {
+		return Peer{}, errors.New("server not started")
 	}
+
+	return Peer{
+		Address:     o.listener.Addr().String(),
+		Certificate: o.cert.Leaf,
+	}, nil
 }
 
-func (o *Overlay) GetIdentity(service string) *Identity {
-	return &Identity{
-		Addr: o.addr,
+func (o *Overlay) GetIdentity(service string) (*Identity, error) {
+	if o.listener == nil {
+		return nil, errors.New("server not started")
 	}
+
+	return &Identity{
+		Addr: o.listener.Addr().String(),
+	}, nil
 }
 
 func (o *Overlay) AddNeighbour(peer Peer) error {
@@ -106,24 +115,6 @@ func (o *Overlay) AddNeighbour(peer Peer) error {
 
 func (o *Overlay) RegisterAggregation(name string, impl Aggregation) {
 	o.aggregators[name] = impl
-}
-
-func (o *Overlay) getConnection(addr string) (*grpc.ClientConn, error) {
-	neighbour, ok := o.neighbours[addr]
-	if !ok {
-		return nil, errors.New("couldn't find the neighbour")
-	}
-
-	pool := x509.NewCertPool()
-	pool.AddCert(neighbour.Certificate)
-
-	ta := credentials.NewTLS(&tls.Config{
-		Certificates: []tls.Certificate{*o.cert},
-		RootCAs:      pool,
-	})
-
-	// Connecting using TLS and the distant server certificate as the root.
-	return grpc.Dial(addr, grpc.WithTransportCredentials(ta))
 }
 
 func (o *Overlay) getConnections(addrs []string) []*grpc.ClientConn {
@@ -157,12 +148,14 @@ func (o *Overlay) getConnections(addrs []string) []*grpc.ClientConn {
 
 // Serve starts the overlay to listen on the address.
 func (o *Overlay) Serve() error {
-	lis, err := net.Listen("tcp", o.addr)
+	lis, err := net.Listen("tcp4", o.addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %v", err)
 	}
 
-	log.Printf("Server [%v] is starting...\n", o.addr)
+	o.listener = lis
+
+	log.Printf("Server [%v] is starting...\n", lis.Addr())
 	close(o.StartChan)
 
 	if err := o.Server.Serve(lis); err != nil {
@@ -207,11 +200,9 @@ func makeCertificate() *tls.Certificate {
 
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{
-			CommonName: "localhost",
-		},
-		NotBefore: time.Now(),
-		NotAfter:  time.Now().Add(time.Hour * 24 * 180),
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(time.Hour * 24 * 180),
 
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},

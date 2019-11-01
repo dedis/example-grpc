@@ -1,7 +1,6 @@
 package skipchain
 
 import (
-	fmt "fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,28 +12,30 @@ func TestSkipchain_Signing(t *testing.T) {
 	n := 5
 	servers := make([]*overlay.Overlay, n)
 	skipchains := make([]*Skipchain, n)
-	roster := make([]overlay.Peer, n)
 	for i := range servers {
-		o := overlay.NewOverlay(fmt.Sprintf("localhost:310%d", i))
+		o := overlay.NewOverlay("localhost:0")
 		servers[i] = o
 		skipchains[i] = NewSkipchain(o)
-		roster[i] = o.GetPeer()
-
-		if i > 0 {
-			for _, srv := range servers[:i] {
-				require.NoError(t, srv.AddNeighbour(o.GetPeer()))
-				require.NoError(t, o.AddNeighbour(srv.GetPeer()))
-			}
-		}
 
 		go func() {
 			err := o.Serve()
 			require.NoError(t, err)
 		}()
+
+		<-o.StartChan
 	}
 
-	for _, srv := range servers {
-		<-srv.StartChan
+	roster := make([]overlay.Peer, n)
+	for i, srv := range servers {
+		curr, err := srv.GetPeer()
+		require.NoError(t, err)
+		roster[i] = curr
+		for _, other := range servers[i+1:] {
+			peer, err := other.GetPeer()
+			require.NoError(t, err)
+			require.NoError(t, srv.AddNeighbour(peer))
+			require.NoError(t, other.AddNeighbour(curr))
+		}
 	}
 
 	sig, err := skipchains[0].Sign([]byte("deadbeef"), roster)
