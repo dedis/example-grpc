@@ -87,25 +87,25 @@ func NewOverlay(addr string) *Overlay {
 	return overlay
 }
 
-func (o *Overlay) GetPeer() (Peer, error) {
+func (o *Overlay) GetPeer() Peer {
 	if o.listener == nil {
-		return Peer{}, errors.New("server not started")
+		panic("server not started")
 	}
 
 	return Peer{
 		Address:     o.listener.Addr().String(),
 		Certificate: o.cert.Leaf,
-	}, nil
+	}
 }
 
-func (o *Overlay) GetIdentity(service string) (*Identity, error) {
+func (o *Overlay) GetIdentity(service string) *Identity {
 	if o.listener == nil {
-		return nil, errors.New("server not started")
+		panic("server not started")
 	}
 
 	return &Identity{
 		Addr: o.listener.Addr().String(),
-	}, nil
+	}
 }
 
 func (o *Overlay) AddNeighbour(peer Peer) error {

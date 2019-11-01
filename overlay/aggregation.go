@@ -10,10 +10,56 @@ import (
 	"github.com/golang/protobuf/ptypes"
 )
 
+// AggregationContext is provided to the protocol functions so that
+// useful information can be retrieved from the context.
+type AggregationContext interface {
+	GetMessage() proto.Message
+	GetRoster() Roster
+}
+
+type SimpleAggregationContext struct {
+	overlay *Overlay
+	request *AggregateRequest
+	message proto.Message
+}
+
+func newSimpleAggregationContext(req *AggregateRequest, o *Overlay) (SimpleAggregationContext, error) {
+	var da ptypes.DynamicAny
+	err := ptypes.UnmarshalAny(req.GetMessage(), &da)
+	if err != nil {
+		return SimpleAggregationContext{}, fmt.Errorf("couldn't unmarshal message: %v", err)
+	}
+
+	return SimpleAggregationContext{
+		request: req,
+		message: da.Message,
+		overlay: o,
+	}, nil
+}
+
+func (sac SimpleAggregationContext) GetMessage() proto.Message {
+	return sac.message
+}
+
+func (sac SimpleAggregationContext) GetRoster() Roster {
+	roster := make(Roster, len(sac.request.GetTree().GetAddresses()))
+	curr := sac.overlay.GetPeer()
+
+	for i, addr := range sac.request.GetTree().GetAddresses() {
+		if addr == curr.Address {
+			roster[i] = curr
+		} else {
+			roster[i] = sac.overlay.neighbours[addr]
+		}
+	}
+
+	return roster
+}
+
 // Aggregation is the interface to implement to register a protocol that
 // will contact all the nodes and aggregate their replies.
 type Aggregation interface {
-	Process(proto.Message, []proto.Message) (proto.Message, error)
+	Process(AggregationContext, []proto.Message) (proto.Message, error)
 }
 
 // AggregationWithIdentity is the interface to implement to register a
@@ -34,10 +80,7 @@ func (o *Overlay) Aggregate(name string, ro Roster, in proto.Message) (proto.Mes
 		return nil, errors.New("aggregation not found")
 	}
 
-	root, err := o.GetPeer()
-	if err != nil {
-		return nil, fmt.Errorf("couldn't get the root: %v", err)
-	}
+	root := o.GetPeer()
 
 	idents := []*Identity{}
 	if aggI, ok := agg.(AggregationWithIdentity); ok {
@@ -80,7 +123,12 @@ func (o *Overlay) Aggregate(name string, ro Roster, in proto.Message) (proto.Mes
 		return nil, fmt.Errorf("couldn't aggregate: %v", err)
 	}
 
-	return agg.Process(in, replies)
+	ctx, err := newSimpleAggregationContext(req, o)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't create the context: %v", err)
+	}
+
+	return agg.Process(ctx, replies)
 }
 
 func (o *Overlay) sendIdentityRequest(msg *IdentityRequest, ident proto.Message) ([]*Identity, error) {
@@ -198,13 +246,12 @@ func (o *overlayService) Aggregate(ctx context.Context, in *AggregateRequest) (*
 		return nil, fmt.Errorf("couldn't send the aggregate request: %v", err)
 	}
 
-	var da ptypes.DynamicAny
-	err = ptypes.UnmarshalAny(in.GetMessage(), &da)
+	aggCtx, err := newSimpleAggregationContext(in, o.Overlay)
 	if err != nil {
-		return nil, fmt.Errorf("couldn't unmarshal the reply: %v", err)
+		return nil, fmt.Errorf("couldn't create the context: %v", err)
 	}
 
-	res, err := agg.Process(da.Message, replies)
+	res, err := agg.Process(aggCtx, replies)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't process: %v", err)
 	}

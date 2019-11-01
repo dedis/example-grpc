@@ -27,12 +27,10 @@ func TestSkipchain_Signing(t *testing.T) {
 
 	roster := make([]overlay.Peer, n)
 	for i, srv := range servers {
-		curr, err := srv.GetPeer()
-		require.NoError(t, err)
+		curr := srv.GetPeer()
 		roster[i] = curr
 		for _, other := range servers[i+1:] {
-			peer, err := other.GetPeer()
-			require.NoError(t, err)
+			peer := other.GetPeer()
 			require.NoError(t, srv.AddNeighbour(peer))
 			require.NoError(t, other.AddNeighbour(curr))
 		}
@@ -42,7 +40,7 @@ func TestSkipchain_Signing(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, sig)
 
-	aggPub, err := skipchains[0].GetAggregatePublicKey()
+	aggPub, err := skipchains[0].GetAggregatePublicKey(roster)
 	require.NoError(t, err)
 	require.NoError(t, bdn.Verify(suite, aggPub, []byte("deadbeef"), sig))
 }

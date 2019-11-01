@@ -2,7 +2,6 @@ package skipchain
 
 import (
 	fmt "fmt"
-	"sort"
 
 	"go.dedis.ch/example-grpc/overlay"
 	"go.dedis.ch/kyber/v4"
@@ -44,17 +43,10 @@ func (sc *Skipchain) GetPublicKey() kyber.Point {
 }
 
 // GetPublicKeys return the list of public keys available.
-// TODO: get by roster.
-func (sc *Skipchain) GetPublicKeys() []kyber.Point {
-	order := make([]string, 0, len(sc.identities))
-	for k := range sc.identities {
-		order = append(order, k)
-	}
-	sort.Strings(order)
-
-	pubs := make([]kyber.Point, len(sc.identities))
-	for i, key := range order {
-		pubs[i] = sc.identities[key]
+func (sc *Skipchain) GetPublicKeys(ro overlay.Roster) []kyber.Point {
+	pubs := make([]kyber.Point, len(ro))
+	for i, key := range ro {
+		pubs[i] = sc.identities[key.Address]
 	}
 
 	return pubs
@@ -62,9 +54,8 @@ func (sc *Skipchain) GetPublicKeys() []kyber.Point {
 
 // GetAggregatePublicKey returns the aggregate of the known
 // public keys.
-// TODO: by roster.
-func (sc *Skipchain) GetAggregatePublicKey() (kyber.Point, error) {
-	pubs := sc.GetPublicKeys()
+func (sc *Skipchain) GetAggregatePublicKey(ro overlay.Roster) (kyber.Point, error) {
+	pubs := sc.GetPublicKeys(ro)
 	mask, _ := sign.NewMask(suite, pubs, nil)
 	for i := range pubs {
 		err := mask.SetBit(i, true)
