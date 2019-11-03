@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"go.dedis.ch/example-grpc/overlay"
+	"github.com/dedis/example-grpc/overlay"
 	"go.dedis.ch/kyber/v4/sign/bdn"
 )
 

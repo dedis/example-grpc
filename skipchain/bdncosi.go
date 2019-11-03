@@ -4,7 +4,7 @@ import (
 	fmt "fmt"
 
 	"github.com/golang/protobuf/proto"
-	"go.dedis.ch/example-grpc/overlay"
+	"github.com/dedis/example-grpc/overlay"
 	"go.dedis.ch/kyber/v4/sign"
 	"go.dedis.ch/kyber/v4/sign/bdn"
 	"go.dedis.ch/kyber/v4/sign/bls"

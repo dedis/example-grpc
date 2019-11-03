@@ -1,4 +1,4 @@
-module go.dedis.ch/example-grpc
+module github.com/dedis/example-grpc
 
 go 1.12
 

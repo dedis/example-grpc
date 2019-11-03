@@ -3,7 +3,7 @@ package skipchain
 import (
 	fmt "fmt"
 
-	"go.dedis.ch/example-grpc/overlay"
+	"github.com/dedis/example-grpc/overlay"
 	"go.dedis.ch/kyber/v4"
 	"go.dedis.ch/kyber/v4/pairing"
 	"go.dedis.ch/kyber/v4/sign"
