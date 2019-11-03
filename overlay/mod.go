@@ -21,11 +21,14 @@ import (
 
 //go:generate protoc -I ./ --go_out=plugins=grpc:./ ./overlay.proto
 
+// Peer is a public identity for a given node.
 type Peer struct {
 	Address     string
 	Certificate *x509.Certificate
 }
 
+// Roster is a set of peers that will work together
+// to execute protocols.
 type Roster []Peer
 
 func (ro Roster) makeTree(root Peer) *Tree {
@@ -87,6 +90,7 @@ func NewOverlay(addr string) *Overlay {
 	return overlay
 }
 
+// GetPeer makes and returns the public identity of the node.
 func (o *Overlay) GetPeer() Peer {
 	if o.listener == nil {
 		panic("server not started")
@@ -98,21 +102,16 @@ func (o *Overlay) GetPeer() Peer {
 	}
 }
 
-func (o *Overlay) GetIdentity(service string) *Identity {
-	if o.listener == nil {
-		panic("server not started")
-	}
-
-	return &Identity{
-		Addr: o.listener.Addr().String(),
-	}
-}
-
+// AddNeighbour inserts the peer in the list of known peers
+// which will allow to communicate with it.
+// TODO: how to pass certs at runtime.
 func (o *Overlay) AddNeighbour(peer Peer) error {
 	o.neighbours[peer.Address] = peer
 	return nil
 }
 
+// RegisterAggregation stores the aggregation using the name
+// as a key.
 func (o *Overlay) RegisterAggregation(name string, impl Aggregation) {
 	o.aggregators[name] = impl
 }
@@ -161,6 +160,8 @@ func (o *Overlay) Serve() error {
 	if err := o.Server.Serve(lis); err != nil {
 		return fmt.Errorf("failed to serve: %v", err)
 	}
+
+	log.Printf("Server [%v] has stopped...\n", lis.Addr())
 
 	return nil
 }

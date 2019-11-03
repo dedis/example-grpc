@@ -4,6 +4,7 @@ import (
 	context "context"
 	"errors"
 	fmt "fmt"
+	"log"
 	"time"
 
 	proto "github.com/golang/protobuf/proto"
@@ -17,6 +18,8 @@ type AggregationContext interface {
 	GetRoster() Roster
 }
 
+// SimpleAggregationContext is a context implementation that will use
+// the overlay to extract the information.
 type SimpleAggregationContext struct {
 	overlay *Overlay
 	request *AggregateRequest
@@ -37,10 +40,12 @@ func newSimpleAggregationContext(req *AggregateRequest, o *Overlay) (SimpleAggre
 	}, nil
 }
 
+// GetMessage returns the request message for this aggregation.
 func (sac SimpleAggregationContext) GetMessage() proto.Message {
 	return sac.message
 }
 
+// GetRoster returns the roster for this aggregation.
 func (sac SimpleAggregationContext) GetRoster() Roster {
 	roster := make(Roster, len(sac.request.GetTree().GetAddresses()))
 	curr := sac.overlay.GetPeer()
@@ -203,27 +208,42 @@ func (o *Overlay) sendAggregateRequest(msg *AggregateRequest, agg Aggregation) (
 		aggI.StoreIdentities(store)
 	}
 
-	children := msg.GetTree().getChildren(o.listener.Addr().String())
+	replies, err := o.aggregateChildren(msg, o.listener.Addr().String())
+	if err != nil {
+		return nil, fmt.Errorf("couldn't aggregate the children: %v", err)
+	}
+
+	return replies, nil
+}
+
+func (o *Overlay) aggregateChildren(in *AggregateRequest, child string) ([]proto.Message, error) {
+	children := in.GetTree().getChildren(child)
 	replies := make([]proto.Message, 0, len(children))
-	for _, conn := range o.getConnections(children) {
+	for i, conn := range o.getConnections(children) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 
 		client := NewOverlayClient(conn)
 		defer conn.Close()
 
-		resp, err := client.Aggregate(ctx, msg)
+		resp, err := client.Aggregate(ctx, in)
 		if err != nil {
-			return nil, err
-		}
+			log.Printf("Couldn't contact [%s]. Taking care of its children.", children[i])
+			childReplies, err := o.aggregateChildren(in, children[i])
+			if err != nil {
+				return nil, err
+			}
 
-		var da ptypes.DynamicAny
-		err = ptypes.UnmarshalAny(resp.GetMessage(), &da)
-		if err != nil {
-			return nil, err
-		}
+			replies = append(replies, childReplies...)
+		} else {
+			var da ptypes.DynamicAny
+			err = ptypes.UnmarshalAny(resp.GetMessage(), &da)
+			if err != nil {
+				return nil, err
+			}
 
-		replies = append(replies, da.Message)
+			replies = append(replies, da.Message)
+		}
 	}
 
 	return replies, nil

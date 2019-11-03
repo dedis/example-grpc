@@ -50,7 +50,10 @@ func TestOverlay_SimpleAggregation(t *testing.T) {
 		}
 	}
 
+	// Kill one server to test the resilience.
+	servers[2].GracefulStop()
+
 	agg, err := servers[0].Aggregate(testAggregationName, roster, &TestMessage{Value: 0})
 	require.NoError(t, err)
-	require.Equal(t, int64(n), agg.(*TestMessage).GetValue())
+	require.Equal(t, int64(n-1), agg.(*TestMessage).GetValue())
 }

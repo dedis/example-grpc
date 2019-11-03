@@ -3,8 +3,8 @@ package skipchain
 import (
 	fmt "fmt"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/dedis/example-grpc/overlay"
+	"github.com/golang/protobuf/proto"
 	"go.dedis.ch/kyber/v4/sign"
 	"go.dedis.ch/kyber/v4/sign/bdn"
 	"go.dedis.ch/kyber/v4/sign/bls"
@@ -62,7 +62,7 @@ func (cosi *cosiAggregate) Process(ctx overlay.AggregationContext, replies []pro
 
 // Identity returns the public identity for the node.
 func (cosi *cosiAggregate) Identity() (proto.Message, error) {
-	buf, err := cosi.skipchain.keyPair.Public.MarshalBinary()
+	buf, err := cosi.skipchain.GetPublicKey().MarshalBinary()
 	if err != nil {
 		return nil, err
 	}
