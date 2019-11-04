@@ -3,8 +3,8 @@ package skipchain
 import (
 	"testing"
 
-	"github.com/stretchr/testify/require"
 	"github.com/dedis/example-grpc/overlay"
+	"github.com/stretchr/testify/require"
 	"go.dedis.ch/kyber/v4/sign/bdn"
 )
 
@@ -43,4 +43,11 @@ func TestSkipchain_Signing(t *testing.T) {
 	aggPub, err := skipchains[0].GetAggregatePublicKey(roster)
 	require.NoError(t, err)
 	require.NoError(t, bdn.Verify(suite, aggPub, []byte("deadbeef"), sig))
+
+	// It should still work with one node down.
+	servers[2].GracefulStop()
+
+	sig, err = skipchains[1].Sign([]byte("deadbeef"), roster)
+	require.NoError(t, err)
+	require.NotNil(t, sig)
 }

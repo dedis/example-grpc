@@ -52,6 +52,17 @@ func (ro Roster) makeTree(root Peer) *Tree {
 	return t
 }
 
+func (ro Roster) makeExceptTree(root Peer, addrs map[string]proto.Message) *Tree {
+	ro2 := make(Roster, 0, len(ro))
+	for _, p := range ro {
+		if _, ok := addrs[p.Address]; !ok {
+			ro2 = append(ro2, p)
+		}
+	}
+
+	return ro2.makeTree(root)
+}
+
 // PropagateFn is a handler for a specific type of propagation. For instance,
 // an aggregation will propagate a message and retrieve a response from the
 // participants.
@@ -169,27 +180,35 @@ func (o *Overlay) Propagate(in *PropagationRequest, addr string, fn PropagateFnG
 	return replies, nil
 }
 
+func (o *Overlay) getConnection(addr string) (*grpc.ClientConn, error) {
+	neighbour, ok := o.neighbours[addr]
+	if !ok {
+		return nil, fmt.Errorf("couldn't find neighbour [%s]", addr)
+	}
+
+	pool := x509.NewCertPool()
+	pool.AddCert(neighbour.Certificate)
+
+	ta := credentials.NewTLS(&tls.Config{
+		Certificates: []tls.Certificate{*o.cert},
+		RootCAs:      pool,
+	})
+
+	// Connecting using TLS and the distant server certificate as the root.
+	conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(ta))
+	if err != nil {
+		return nil, fmt.Errorf("couldn't dial: %v", err)
+	}
+
+	return conn, nil
+}
+
 func (o *Overlay) getConnections(addrs []string) []*grpc.ClientConn {
 	peers := make([]*grpc.ClientConn, 0, len(addrs))
 	for _, addr := range addrs {
-		neighbour, ok := o.neighbours[addr]
-		if !ok {
-			log.Printf("Couldn't find neighbour [%s]\n", addr)
-			continue
-		}
-
-		pool := x509.NewCertPool()
-		pool.AddCert(neighbour.Certificate)
-
-		ta := credentials.NewTLS(&tls.Config{
-			Certificates: []tls.Certificate{*o.cert},
-			RootCAs:      pool,
-		})
-
-		// Connecting using TLS and the distant server certificate as the root.
-		conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(ta))
+		conn, err := o.getConnection(addr)
 		if err != nil {
-			log.Printf("did not connect: %+v", err)
+			log.Printf("couldn't open the connection: %+v", err)
 		} else {
 			// Add the neighbour only if we can dial.
 			peers = append(peers, conn)

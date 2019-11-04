@@ -4,6 +4,8 @@ import (
 	context "context"
 	"errors"
 	fmt "fmt"
+	"log"
+	"time"
 
 	proto "github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes"
@@ -73,6 +75,8 @@ type AggregationWithIdentity interface {
 	Identity() (proto.Message, error)
 
 	StoreIdentities(map[string]proto.Message)
+
+	GetIdentities() map[string]proto.Message
 }
 
 // Aggregate starts a new aggregation protocol that will gather a response from
@@ -85,15 +89,12 @@ func (o *Overlay) Aggregate(name string, ro Roster, in proto.Message) (proto.Mes
 
 	root := o.GetPeer()
 
-	idents := []*Identity{}
 	if aggI, ok := agg.(AggregationWithIdentity); ok {
 		// The procool implements the identity support so the leader
-		// will gather the identities and send them back with the
-		// aggregation request.
-		// TODO: improvement to trigger this only when necessary.
+		// will gather the identities.
 		req := &PropagationRequest{
 			Protocol: name,
-			Tree:     ro.makeTree(root),
+			Tree:     ro.makeExceptTree(root, aggI.GetIdentities()),
 		}
 
 		// Each protocol can implement its own public identity.
@@ -103,10 +104,17 @@ func (o *Overlay) Aggregate(name string, ro Roster, in proto.Message) (proto.Mes
 		}
 
 		// Gather the different identities involved.
-		idents, err = o.sendIdentityRequest(req, ident)
+		idents, err := o.sendIdentityRequest(req, ident)
 		if err != nil {
 			return nil, fmt.Errorf("couldn't request the identities: %v", err)
 		}
+
+		err = o.storeIdentities(idents, aggI)
+		if err != nil {
+			return nil, fmt.Errorf("couldn't store the identities: %v", err)
+		}
+
+		log.Printf("Leader stored %d identities\n", len(idents))
 	}
 
 	msg, err := ptypes.MarshalAny(in)
@@ -115,10 +123,9 @@ func (o *Overlay) Aggregate(name string, ro Roster, in proto.Message) (proto.Mes
 	}
 
 	req := &PropagationRequest{
-		Protocol:   name,
-		Tree:       ro.makeTree(root),
-		Identities: idents,
-		Message:    msg,
+		Protocol: name,
+		Tree:     ro.makeTree(root),
+		Message:  msg,
 	}
 
 	res, err := o.sendAggregateRequest(req, agg)
@@ -127,6 +134,22 @@ func (o *Overlay) Aggregate(name string, ro Roster, in proto.Message) (proto.Mes
 	}
 
 	return res, nil
+}
+
+func (o *Overlay) storeIdentities(idents []*Identity, agg AggregationWithIdentity) error {
+	store := make(map[string]proto.Message)
+	for _, ident := range idents {
+		var da ptypes.DynamicAny
+		err := ptypes.UnmarshalAny(ident.GetValue(), &da)
+		if err != nil {
+			return err
+		}
+
+		store[ident.GetAddr()] = da.Message
+	}
+
+	agg.StoreIdentities(store)
+	return nil
 }
 
 func (o *Overlay) sendIdentityRequest(in *PropagationRequest, ident proto.Message) ([]*Identity, error) {
@@ -154,24 +177,6 @@ func (o *Overlay) sendIdentityRequest(in *PropagationRequest, ident proto.Messag
 }
 
 func (o *Overlay) sendAggregateRequest(msg *PropagationRequest, agg Aggregation) (proto.Message, error) {
-	if aggI, ok := agg.(AggregationWithIdentity); ok {
-		store := make(map[string]proto.Message)
-		for _, ident := range msg.GetIdentities() {
-			var da ptypes.DynamicAny
-			err := ptypes.UnmarshalAny(ident.GetValue(), &da)
-			if err != nil {
-				return nil, err
-			}
-
-			store[ident.GetAddr()] = da.Message
-		}
-
-		// Make the identities provided by the protocol available in the
-		// skipchain engine.
-		// TODO: improvement to request missing identities.
-		aggI.StoreIdentities(store)
-	}
-
 	replies, err := o.Propagate(msg, o.listener.Addr().String(), func(cl OverlayClient) PropagateFn {
 		return cl.Aggregate
 	})
@@ -190,6 +195,33 @@ func (o *Overlay) sendAggregateRequest(msg *PropagationRequest, agg Aggregation)
 	}
 
 	return res, nil
+}
+
+func (o *overlayService) RequestIdentities(ctx context.Context, in *IdentityRequest) (*IdentityResponse, error) {
+	agg := o.Overlay.aggregators[in.GetProtocol()]
+	if agg == nil {
+		return nil, errors.New("aggregation not found")
+	}
+
+	addrs := in.GetAddresses()
+	idents := agg.(AggregationWithIdentity).GetIdentities()
+	res := make([]*Identity, 0, len(addrs))
+	for _, addr := range addrs {
+		ident := idents[addr]
+		if ident != nil {
+			value, err := ptypes.MarshalAny(ident)
+			if err != nil {
+				return nil, fmt.Errorf("couldn't marshal the identity: %v", err)
+			}
+
+			res = append(res, &Identity{
+				Addr:  addr,
+				Value: value,
+			})
+		}
+	}
+
+	return &IdentityResponse{Identities: res}, nil
 }
 
 // Identity is the handler of identity requests. It will contact the children if
@@ -220,7 +252,7 @@ func (o *overlayService) Identity(ctx context.Context, in *PropagationRequest) (
 
 // Aggregate is the handler for aggregation requests.
 func (o *overlayService) Aggregate(ctx context.Context, in *PropagationRequest) (*PropagationResponse, error) {
-	_, err := o.Overlay.peerFromContext(ctx)
+	peer, err := o.Overlay.peerFromContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't get client info: %v", err)
 	}
@@ -228,6 +260,43 @@ func (o *overlayService) Aggregate(ctx context.Context, in *PropagationRequest) 
 	agg := o.Overlay.aggregators[in.GetProtocol()]
 	if agg == nil {
 		return nil, errors.New("aggregation not found")
+	}
+
+	if aggI, ok := agg.(AggregationWithIdentity); ok {
+		// The aggregation requires the identities so we ask for
+		// missing ones if any.
+		missings := make([]string, 0, len(in.GetTree().GetAddresses()))
+		idents := aggI.GetIdentities()
+
+		for _, addr := range in.GetTree().GetAddresses() {
+			if _, ok := idents[addr]; !ok {
+				missings = append(missings, addr)
+			}
+		}
+
+		conn, err := o.Overlay.getConnection(peer.Address)
+		if err != nil {
+			return nil, errors.New("couldn't get the missing identities")
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		client := NewOverlayClient(conn)
+		defer conn.Close()
+
+		resp, err := client.RequestIdentities(ctx, &IdentityRequest{
+			Protocol:  in.GetProtocol(),
+			Addresses: missings,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("couldn't request the identities: %v", err)
+		}
+
+		err = o.Overlay.storeIdentities(resp.GetIdentities(), aggI)
+		if err != nil {
+			return nil, fmt.Errorf("couldn't store the identities: %v", err)
+		}
 	}
 
 	res, err := o.Overlay.sendAggregateRequest(in, agg)

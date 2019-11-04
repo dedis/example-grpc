@@ -83,3 +83,16 @@ func (cosi *cosiAggregate) StoreIdentities(idents map[string]proto.Message) {
 		cosi.skipchain.identities[k] = point
 	}
 }
+
+func (cosi *cosiAggregate) GetIdentities() map[string]proto.Message {
+	idents := make(map[string]proto.Message)
+	for k, v := range cosi.skipchain.identities {
+		bb, _ := v.MarshalBinary()
+
+		idents[k] = &BdnIdentity{
+			PublicKey: bb,
+		}
+	}
+
+	return idents
+}
