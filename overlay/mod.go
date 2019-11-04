@@ -63,13 +63,8 @@ func (ro Roster) makeExceptTree(root Peer, addrs map[string]proto.Message) *Tree
 	return ro2.makeTree(root)
 }
 
-// PropagateFn is a handler for a specific type of propagation. For instance,
-// an aggregation will propagate a message and retrieve a response from the
-// participants.
-type PropagateFn func(context.Context, *PropagationRequest, ...grpc.CallOption) (*PropagationResponse, error)
-
 // PropagateFnGenerator returns the propagation function from the client.
-type PropagateFnGenerator func(client OverlayClient) PropagateFn
+type PropagateFnGenerator func(client OverlayClient) (*PropagationResponse, error)
 
 // Propagator enables the support of propagation protocols.
 type Propagator interface {
@@ -150,13 +145,10 @@ func (o *Overlay) Propagate(in *PropagationRequest, addr string, fn PropagateFnG
 	children := in.GetTree().getChildren(addr)
 	replies := make([]proto.Message, 0, len(children))
 	for i, conn := range o.getConnections(children) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-
 		client := NewOverlayClient(conn)
 		defer conn.Close()
 
-		resp, err := fn(client)(ctx, in)
+		resp, err := fn(client)
 		if err != nil {
 			// If the client is not responsive, we contact its children directly.
 			log.Printf("Couldn't contact [%s]. Taking care of its children.\n", children[i])

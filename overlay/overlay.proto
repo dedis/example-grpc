@@ -9,7 +9,11 @@ service Overlay {
 
     rpc identity(PropagationRequest) returns (PropagationResponse) {}
 
-    rpc aggregate(PropagationRequest) returns (PropagationResponse) {}
+    rpc aggregate(stream PropagationRequest) returns (stream PropagationResponse) {}
+}
+
+message EchoMessage {
+    string value = 1;
 }
 
 message Identity {

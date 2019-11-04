@@ -5,6 +5,7 @@ import (
 	"errors"
 	fmt "fmt"
 	"log"
+	"strings"
 	"time"
 
 	proto "github.com/golang/protobuf/proto"
@@ -153,8 +154,11 @@ func (o *Overlay) storeIdentities(idents []*Identity, agg AggregationWithIdentit
 }
 
 func (o *Overlay) sendIdentityRequest(in *PropagationRequest, ident proto.Message) ([]*Identity, error) {
-	replies, err := o.Propagate(in, o.listener.Addr().String(), func(cl OverlayClient) PropagateFn {
-		return cl.Identity
+	replies, err := o.Propagate(in, o.listener.Addr().String(), func(cl OverlayClient) (*PropagationResponse, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		return cl.Identity(ctx, in)
 	})
 
 	idents := make([]*Identity, 0)
@@ -177,8 +181,54 @@ func (o *Overlay) sendIdentityRequest(in *PropagationRequest, ident proto.Messag
 }
 
 func (o *Overlay) sendAggregateRequest(msg *PropagationRequest, agg Aggregation) (proto.Message, error) {
-	replies, err := o.Propagate(msg, o.listener.Addr().String(), func(cl OverlayClient) PropagateFn {
-		return cl.Aggregate
+	replies, err := o.Propagate(msg, o.listener.Addr().String(), func(cl OverlayClient) (*PropagationResponse, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		stream, err := cl.Aggregate(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("couldn't open the stream: %v", err)
+		}
+
+		err = stream.Send(msg)
+		if err != nil {
+			return nil, err
+		}
+
+		for {
+			resp, err := stream.Recv()
+			if err != nil {
+				return nil, fmt.Errorf("couldn't receive: %v", err)
+			}
+
+			if strings.HasSuffix(resp.GetMessage().GetTypeUrl(), proto.MessageName(&IdentityRequest{})) {
+				var req IdentityRequest
+				err = ptypes.UnmarshalAny(resp.GetMessage(), &req)
+
+				replies := make([]*Identity, 0, len(req.GetAddresses()))
+				identities := agg.(AggregationWithIdentity).GetIdentities()
+				for _, addr := range req.GetAddresses() {
+					ident := identities[addr]
+					value, err := ptypes.MarshalAny(ident)
+					if err != nil {
+						return nil, err
+					}
+					replies = append(replies, &Identity{
+						Addr:  addr,
+						Value: value,
+					})
+				}
+
+				ret, err := ptypes.MarshalAny(&IdentityResponse{Identities: replies})
+				if err != nil {
+					return nil, err
+				}
+
+				stream.Send(&PropagationRequest{Message: ret})
+			} else {
+				return resp, nil
+			}
+		}
 	})
 	if err != nil {
 		return nil, fmt.Errorf("couldn't aggregate the children: %v", err)
@@ -251,15 +301,20 @@ func (o *overlayService) Identity(ctx context.Context, in *PropagationRequest) (
 }
 
 // Aggregate is the handler for aggregation requests.
-func (o *overlayService) Aggregate(ctx context.Context, in *PropagationRequest) (*PropagationResponse, error) {
-	peer, err := o.Overlay.peerFromContext(ctx)
+func (o *overlayService) Aggregate(stream Overlay_AggregateServer) error {
+	_, err := o.Overlay.peerFromContext(stream.Context())
 	if err != nil {
-		return nil, fmt.Errorf("couldn't get client info: %v", err)
+		return fmt.Errorf("couldn't get client info: %v", err)
+	}
+
+	in, err := stream.Recv()
+	if err != nil {
+		return fmt.Errorf("couldn't receive the request: %v", err)
 	}
 
 	agg := o.Overlay.aggregators[in.GetProtocol()]
 	if agg == nil {
-		return nil, errors.New("aggregation not found")
+		return errors.New("aggregation not found")
 	}
 
 	if aggI, ok := agg.(AggregationWithIdentity); ok {
@@ -274,40 +329,32 @@ func (o *overlayService) Aggregate(ctx context.Context, in *PropagationRequest) 
 			}
 		}
 
-		conn, err := o.Overlay.getConnection(peer.Address)
-		if err != nil {
-			return nil, errors.New("couldn't get the missing identities")
-		}
+		msg, err := ptypes.MarshalAny(&IdentityRequest{Addresses: missings})
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
+		err = stream.Send(&PropagationResponse{Message: msg})
 
-		client := NewOverlayClient(conn)
-		defer conn.Close()
+		req, err := stream.Recv()
 
-		resp, err := client.RequestIdentities(ctx, &IdentityRequest{
-			Protocol:  in.GetProtocol(),
-			Addresses: missings,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("couldn't request the identities: %v", err)
-		}
+		var resp IdentityResponse
+		err = ptypes.UnmarshalAny(req.GetMessage(), &resp)
 
 		err = o.Overlay.storeIdentities(resp.GetIdentities(), aggI)
 		if err != nil {
-			return nil, fmt.Errorf("couldn't store the identities: %v", err)
+			return fmt.Errorf("couldn't store the identities: %v", err)
 		}
 	}
 
 	res, err := o.Overlay.sendAggregateRequest(in, agg)
 	if err != nil {
-		return nil, fmt.Errorf("couldn't send the aggregate request: %v", err)
+		return fmt.Errorf("couldn't send the aggregate request: %v", err)
 	}
 
 	r, err := ptypes.MarshalAny(res)
 	if err != nil {
-		return nil, fmt.Errorf("couldn't marshal: %v", err)
+		return fmt.Errorf("couldn't marshal: %v", err)
 	}
 
-	return &PropagationResponse{Message: r}, nil
+	err = stream.Send(&PropagationResponse{Message: r})
+
+	return nil
 }
