@@ -14,6 +14,8 @@ import (
 	"net"
 	"time"
 
+	proto "github.com/golang/protobuf/proto"
+	"github.com/golang/protobuf/ptypes"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
@@ -50,9 +52,24 @@ func (ro Roster) makeTree(root Peer) *Tree {
 	return t
 }
 
+// PropagateFn is a handler for a specific type of propagation. For instance,
+// an aggregation will propagate a message and retrieve a response from the
+// participants.
+type PropagateFn func(context.Context, *PropagationRequest, ...grpc.CallOption) (*PropagationResponse, error)
+
+// PropagateFnGenerator returns the propagation function from the client.
+type PropagateFnGenerator func(client OverlayClient) PropagateFn
+
+// Propagator enables the support of propagation protocols.
+type Propagator interface {
+	Propagate(in *PropagationRequest, addr string, fn PropagateFnGenerator) ([]proto.Message, error)
+}
+
 // Overlay is the network abstraction to communicate with the roster.
 type Overlay struct {
 	*grpc.Server
+
+	Propagator
 
 	cert      *tls.Certificate
 	addr      string
@@ -114,6 +131,42 @@ func (o *Overlay) AddNeighbour(peer Peer) error {
 // as a key.
 func (o *Overlay) RegisterAggregation(name string, impl Aggregation) {
 	o.aggregators[name] = impl
+}
+
+// Propagate takes care of spreading the incoming request to the node's
+// children, processing their responses and send them to the parent.
+func (o *Overlay) Propagate(in *PropagationRequest, addr string, fn PropagateFnGenerator) ([]proto.Message, error) {
+	children := in.GetTree().getChildren(addr)
+	replies := make([]proto.Message, 0, len(children))
+	for i, conn := range o.getConnections(children) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		client := NewOverlayClient(conn)
+		defer conn.Close()
+
+		resp, err := fn(client)(ctx, in)
+		if err != nil {
+			// If the client is not responsive, we contact its children directly.
+			log.Printf("Couldn't contact [%s]. Taking care of its children.\n", children[i])
+			childReplies, err := o.Propagate(in, children[i], fn)
+			if err != nil {
+				return nil, err
+			}
+
+			replies = append(replies, childReplies...)
+		} else {
+			var da ptypes.DynamicAny
+			err = ptypes.UnmarshalAny(resp.GetMessage(), &da)
+			if err != nil {
+				return nil, err
+			}
+
+			replies = append(replies, da.Message)
+		}
+	}
+
+	return replies, nil
 }
 
 func (o *Overlay) getConnections(addrs []string) []*grpc.ClientConn {

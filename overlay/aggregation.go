@@ -4,8 +4,6 @@ import (
 	context "context"
 	"errors"
 	fmt "fmt"
-	"log"
-	"time"
 
 	proto "github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes"
@@ -22,11 +20,11 @@ type AggregationContext interface {
 // the overlay to extract the information.
 type SimpleAggregationContext struct {
 	overlay *Overlay
-	request *AggregateRequest
+	request *PropagationRequest
 	message proto.Message
 }
 
-func newSimpleAggregationContext(req *AggregateRequest, o *Overlay) (SimpleAggregationContext, error) {
+func newSimpleAggregationContext(req *PropagationRequest, o *Overlay) (SimpleAggregationContext, error) {
 	var da ptypes.DynamicAny
 	err := ptypes.UnmarshalAny(req.GetMessage(), &da)
 	if err != nil {
@@ -93,7 +91,7 @@ func (o *Overlay) Aggregate(name string, ro Roster, in proto.Message) (proto.Mes
 		// will gather the identities and send them back with the
 		// aggregation request.
 		// TODO: improvement to trigger this only when necessary.
-		req := &IdentityRequest{
+		req := &PropagationRequest{
 			Protocol: name,
 			Tree:     ro.makeTree(root),
 		}
@@ -116,42 +114,29 @@ func (o *Overlay) Aggregate(name string, ro Roster, in proto.Message) (proto.Mes
 		return nil, fmt.Errorf("couldn't marshal: %v", err)
 	}
 
-	req := &AggregateRequest{
+	req := &PropagationRequest{
 		Protocol:   name,
 		Tree:       ro.makeTree(root),
 		Identities: idents,
 		Message:    msg,
 	}
 
-	replies, err := o.sendAggregateRequest(req, agg)
+	res, err := o.sendAggregateRequest(req, agg)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't aggregate: %v", err)
 	}
 
-	ctx, err := newSimpleAggregationContext(req, o)
-	if err != nil {
-		return nil, fmt.Errorf("couldn't create the context: %v", err)
-	}
-
-	return agg.Process(ctx, replies)
+	return res, nil
 }
 
-func (o *Overlay) sendIdentityRequest(msg *IdentityRequest, ident proto.Message) ([]*Identity, error) {
-	children := msg.GetTree().getChildren(o.listener.Addr().String())
-	idents := make([]*Identity, 0, len(children))
-	for _, conn := range o.getConnections(children) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
+func (o *Overlay) sendIdentityRequest(in *PropagationRequest, ident proto.Message) ([]*Identity, error) {
+	replies, err := o.Propagate(in, o.listener.Addr().String(), func(cl OverlayClient) PropagateFn {
+		return cl.Identity
+	})
 
-		client := NewOverlayClient(conn)
-		defer conn.Close()
-
-		resp, err := client.Identity(ctx, msg)
-		if err != nil {
-			return nil, err
-		}
-
-		idents = append(idents, resp.GetIdentities()...)
+	idents := make([]*Identity, 0)
+	for _, reply := range replies {
+		idents = append(idents, reply.(*IdentityResponse).GetIdentities()...)
 	}
 
 	value, err := ptypes.MarshalAny(ident)
@@ -168,28 +153,7 @@ func (o *Overlay) sendIdentityRequest(msg *IdentityRequest, ident proto.Message)
 	return idents, nil
 }
 
-// Identity is the handler of identity requests. It will contact the children if
-// any and then send back the list of known identities.
-func (o *overlayService) Identity(ctx context.Context, in *IdentityRequest) (*IdentityResponse, error) {
-	agg := o.Overlay.aggregators[in.GetProtocol()]
-	if agg == nil {
-		return nil, errors.New("aggregation not found")
-	}
-
-	ident, err := agg.(AggregationWithIdentity).Identity()
-	if err != nil {
-		return nil, fmt.Errorf("couldn't generate the identity: %v", err)
-	}
-
-	replies, err := o.Overlay.sendIdentityRequest(in, ident)
-	if err != nil {
-		return nil, fmt.Errorf("couldn't send the identity request: %v", err)
-	}
-
-	return &IdentityResponse{Identities: replies}, nil
-}
-
-func (o *Overlay) sendAggregateRequest(msg *AggregateRequest, agg Aggregation) ([]proto.Message, error) {
+func (o *Overlay) sendAggregateRequest(msg *PropagationRequest, agg Aggregation) (proto.Message, error) {
 	if aggI, ok := agg.(AggregationWithIdentity); ok {
 		store := make(map[string]proto.Message)
 		for _, ident := range msg.GetIdentities() {
@@ -208,49 +172,54 @@ func (o *Overlay) sendAggregateRequest(msg *AggregateRequest, agg Aggregation) (
 		aggI.StoreIdentities(store)
 	}
 
-	replies, err := o.aggregateChildren(msg, o.listener.Addr().String())
+	replies, err := o.Propagate(msg, o.listener.Addr().String(), func(cl OverlayClient) PropagateFn {
+		return cl.Aggregate
+	})
 	if err != nil {
 		return nil, fmt.Errorf("couldn't aggregate the children: %v", err)
 	}
 
-	return replies, nil
-}
-
-func (o *Overlay) aggregateChildren(in *AggregateRequest, child string) ([]proto.Message, error) {
-	children := in.GetTree().getChildren(child)
-	replies := make([]proto.Message, 0, len(children))
-	for i, conn := range o.getConnections(children) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-
-		client := NewOverlayClient(conn)
-		defer conn.Close()
-
-		resp, err := client.Aggregate(ctx, in)
-		if err != nil {
-			log.Printf("Couldn't contact [%s]. Taking care of its children.", children[i])
-			childReplies, err := o.aggregateChildren(in, children[i])
-			if err != nil {
-				return nil, err
-			}
-
-			replies = append(replies, childReplies...)
-		} else {
-			var da ptypes.DynamicAny
-			err = ptypes.UnmarshalAny(resp.GetMessage(), &da)
-			if err != nil {
-				return nil, err
-			}
-
-			replies = append(replies, da.Message)
-		}
+	aggCtx, err := newSimpleAggregationContext(msg, o)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't create the context: %v", err)
 	}
 
-	return replies, nil
+	res, err := agg.Process(aggCtx, replies)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't process: %v", err)
+	}
+
+	return res, nil
+}
+
+// Identity is the handler of identity requests. It will contact the children if
+// any and then send back the list of known identities.
+func (o *overlayService) Identity(ctx context.Context, in *PropagationRequest) (*PropagationResponse, error) {
+	agg := o.Overlay.aggregators[in.GetProtocol()]
+	if agg == nil {
+		return nil, errors.New("aggregation not found")
+	}
+
+	ident, err := agg.(AggregationWithIdentity).Identity()
+	if err != nil {
+		return nil, fmt.Errorf("couldn't generate the identity: %v", err)
+	}
+
+	replies, err := o.Overlay.sendIdentityRequest(in, ident)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't send the identity request: %v", err)
+	}
+
+	buf, err := ptypes.MarshalAny(&IdentityResponse{Identities: replies})
+	if err != nil {
+		return nil, fmt.Errorf("couldn't marshal the response: %v", err)
+	}
+
+	return &PropagationResponse{Message: buf}, nil
 }
 
 // Aggregate is the handler for aggregation requests.
-func (o *overlayService) Aggregate(ctx context.Context, in *AggregateRequest) (*AggregateResponse, error) {
+func (o *overlayService) Aggregate(ctx context.Context, in *PropagationRequest) (*PropagationResponse, error) {
 	_, err := o.Overlay.peerFromContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't get client info: %v", err)
@@ -261,19 +230,9 @@ func (o *overlayService) Aggregate(ctx context.Context, in *AggregateRequest) (*
 		return nil, errors.New("aggregation not found")
 	}
 
-	replies, err := o.Overlay.sendAggregateRequest(in, agg)
+	res, err := o.Overlay.sendAggregateRequest(in, agg)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't send the aggregate request: %v", err)
-	}
-
-	aggCtx, err := newSimpleAggregationContext(in, o.Overlay)
-	if err != nil {
-		return nil, fmt.Errorf("couldn't create the context: %v", err)
-	}
-
-	res, err := agg.Process(aggCtx, replies)
-	if err != nil {
-		return nil, fmt.Errorf("couldn't process: %v", err)
 	}
 
 	r, err := ptypes.MarshalAny(res)
@@ -281,5 +240,5 @@ func (o *overlayService) Aggregate(ctx context.Context, in *AggregateRequest) (*
 		return nil, fmt.Errorf("couldn't marshal: %v", err)
 	}
 
-	return &AggregateResponse{Message: r}, nil
+	return &PropagationResponse{Message: r}, nil
 }

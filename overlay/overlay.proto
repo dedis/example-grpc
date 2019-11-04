@@ -5,20 +5,15 @@ package overlay;
 import "google/protobuf/any.proto";
 
 service Overlay {
-    rpc identity(IdentityRequest) returns (IdentityResponse) {}
+    rpc identity(PropagationRequest) returns (PropagationResponse) {}
 
-    rpc aggregate(AggregateRequest) returns (AggregateResponse) {}
+    rpc aggregate(PropagationRequest) returns (PropagationResponse) {}
 }
 
 message Identity {
     string addr = 1;
     google.protobuf.Any value = 2;
     bytes signature = 3;
-}
-
-message IdentityRequest {
-    string protocol = 1;
-    Tree tree = 2;
 }
 
 message IdentityResponse {
@@ -30,14 +25,14 @@ message Tree {
     int32 k = 2;
 }
 
-message AggregateRequest {
+message PropagationRequest {
     string protocol = 1;
     Tree tree = 2;
     repeated Identity identities = 3;
     google.protobuf.Any message = 4;
 }
 
-message AggregateResponse {
+message PropagationResponse {
     google.protobuf.Any message = 1;
 }
 
