@@ -12,10 +12,12 @@ import (
 	"log"
 	"math/big"
 	"net"
+	"net/http"
 	"time"
 
 	proto "github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes"
+	"github.com/improbable-eng/grpc-web/go/grpcweb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
@@ -80,6 +82,7 @@ type Overlay struct {
 	cert      *tls.Certificate
 	addr      string
 	listener  net.Listener
+	srv       *http.Server
 	StartChan chan struct{}
 
 	// neighbours contains the certificate and details about known peers.
@@ -91,12 +94,7 @@ type Overlay struct {
 // NewOverlay returns a new overlay.
 func NewOverlay(addr string) *Overlay {
 	cert := makeCertificate()
-
-	ta := credentials.NewTLS(&tls.Config{
-		Certificates: []tls.Certificate{*cert},
-		ClientAuth:   tls.RequireAnyClientCert,
-	})
-	srv := grpc.NewServer(grpc.Creds(ta))
+	srv := grpc.NewServer()
 
 	overlay := &Overlay{
 		Server:      srv,
@@ -150,6 +148,7 @@ func (o *Overlay) Propagate(in *PropagationRequest, addr string, fn PropagateFnG
 
 		resp, err := fn(client)
 		if err != nil {
+			log.Printf("Error: %+v\n", err)
 			// If the client is not responsive, we contact its children directly.
 			log.Printf("Couldn't contact [%s]. Taking care of its children.\n", children[i])
 			childReplies, err := o.Propagate(in, children[i], fn)
@@ -221,13 +220,41 @@ func (o *Overlay) Serve() error {
 	log.Printf("Server [%v] is starting...\n", lis.Addr())
 	close(o.StartChan)
 
-	if err := o.Server.Serve(lis); err != nil {
-		return fmt.Errorf("failed to serve: %v", err)
+	wrapped := grpcweb.WrapServer(o.Server)
+
+	o.srv = &http.Server{
+		TLSConfig: &tls.Config{
+			// TODO: a LE certificate or similar must be used alongside the actual
+			// server certificate for the browser to accept the TLS connection.
+			Certificates: []tls.Certificate{*o.cert},
+			ClientAuth:   tls.RequestClientCert,
+		},
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Content-Type") == "application/grpc" {
+				o.ServeHTTP(w, r)
+			} else {
+				wrapped.ServeHTTP(w, r)
+			}
+		}),
+	}
+
+	if err := o.srv.ServeTLS(lis, "", ""); err != nil {
+		if err != http.ErrServerClosed {
+			return fmt.Errorf("failed to serve: %v", err)
+		}
 	}
 
 	log.Printf("Server [%v] has stopped...\n", lis.Addr())
 
 	return nil
+}
+
+// GracefulStop stops the server when current connections are done.
+func (o *Overlay) GracefulStop() error {
+	// Close current opened connection in the gRPC server.
+	o.Server.GracefulStop()
+
+	return o.srv.Shutdown(context.Background())
 }
 
 func (o *Overlay) peerFromContext(ctx context.Context) (Peer, error) {

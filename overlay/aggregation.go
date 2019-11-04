@@ -358,3 +358,7 @@ func (o *overlayService) Aggregate(stream Overlay_AggregateServer) error {
 
 	return nil
 }
+
+func (o *overlayService) Echo(ctx context.Context, in *EchoMessage) (*EchoMessage, error) {
+	return in, nil
+}
