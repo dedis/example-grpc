@@ -5,7 +5,6 @@ import (
 	"errors"
 	fmt "fmt"
 	"log"
-	"strings"
 	"time"
 
 	proto "github.com/golang/protobuf/proto"
@@ -201,13 +200,10 @@ func (o *Overlay) sendAggregateRequest(msg *PropagationRequest, agg Aggregation)
 				return nil, fmt.Errorf("couldn't receive: %v", err)
 			}
 
-			if strings.HasSuffix(resp.GetMessage().GetTypeUrl(), proto.MessageName(&IdentityRequest{})) {
-				var req IdentityRequest
-				err = ptypes.UnmarshalAny(resp.GetMessage(), &req)
-
-				replies := make([]*Identity, 0, len(req.GetAddresses()))
+			if resp.GetMessage() == nil {
+				replies := make([]*Identity, 0, len(resp.GetAddresses()))
 				identities := agg.(AggregationWithIdentity).GetIdentities()
-				for _, addr := range req.GetAddresses() {
+				for _, addr := range resp.GetAddresses() {
 					ident := identities[addr]
 					value, err := ptypes.MarshalAny(ident)
 					if err != nil {
@@ -219,12 +215,7 @@ func (o *Overlay) sendAggregateRequest(msg *PropagationRequest, agg Aggregation)
 					})
 				}
 
-				ret, err := ptypes.MarshalAny(&IdentityResponse{Identities: replies})
-				if err != nil {
-					return nil, err
-				}
-
-				stream.Send(&PropagationRequest{Message: ret})
+				stream.Send(&PropagationRequest{Identities: replies})
 			} else {
 				return resp, nil
 			}
@@ -245,33 +236,6 @@ func (o *Overlay) sendAggregateRequest(msg *PropagationRequest, agg Aggregation)
 	}
 
 	return res, nil
-}
-
-func (o *overlayService) RequestIdentities(ctx context.Context, in *IdentityRequest) (*IdentityResponse, error) {
-	agg := o.Overlay.aggregators[in.GetProtocol()]
-	if agg == nil {
-		return nil, errors.New("aggregation not found")
-	}
-
-	addrs := in.GetAddresses()
-	idents := agg.(AggregationWithIdentity).GetIdentities()
-	res := make([]*Identity, 0, len(addrs))
-	for _, addr := range addrs {
-		ident := idents[addr]
-		if ident != nil {
-			value, err := ptypes.MarshalAny(ident)
-			if err != nil {
-				return nil, fmt.Errorf("couldn't marshal the identity: %v", err)
-			}
-
-			res = append(res, &Identity{
-				Addr:  addr,
-				Value: value,
-			})
-		}
-	}
-
-	return &IdentityResponse{Identities: res}, nil
 }
 
 // Identity is the handler of identity requests. It will contact the children if
@@ -318,29 +282,9 @@ func (o *overlayService) Aggregate(stream Overlay_AggregateServer) error {
 	}
 
 	if aggI, ok := agg.(AggregationWithIdentity); ok {
-		// The aggregation requires the identities so we ask for
-		// missing ones if any.
-		missings := make([]string, 0, len(in.GetTree().GetAddresses()))
-		idents := aggI.GetIdentities()
-
-		for _, addr := range in.GetTree().GetAddresses() {
-			if _, ok := idents[addr]; !ok {
-				missings = append(missings, addr)
-			}
-		}
-
-		msg, err := ptypes.MarshalAny(&IdentityRequest{Addresses: missings})
-
-		err = stream.Send(&PropagationResponse{Message: msg})
-
-		req, err := stream.Recv()
-
-		var resp IdentityResponse
-		err = ptypes.UnmarshalAny(req.GetMessage(), &resp)
-
-		err = o.Overlay.storeIdentities(resp.GetIdentities(), aggI)
+		err = o.requestMissingIdentities(stream, in.GetTree().GetAddresses(), aggI)
 		if err != nil {
-			return fmt.Errorf("couldn't store the identities: %v", err)
+			return fmt.Errorf("couldn't get missing identities: %v", err)
 		}
 	}
 
@@ -355,6 +299,41 @@ func (o *overlayService) Aggregate(stream Overlay_AggregateServer) error {
 	}
 
 	err = stream.Send(&PropagationResponse{Message: r})
+
+	return nil
+}
+
+func (o *overlayService) requestMissingIdentities(stream Overlay_AggregateServer, addrs []string, agg AggregationWithIdentity) error {
+	// The aggregation requires the identities so we ask for
+	// missing ones if any.
+	missings := make([]string, 0, len(addrs))
+	idents := agg.GetIdentities()
+
+	for _, addr := range addrs {
+		if _, ok := idents[addr]; !ok {
+			missings = append(missings, addr)
+		}
+	}
+
+	if len(missings) == 0 {
+		// All identities already stored so we skip.
+		return nil
+	}
+
+	err := stream.Send(&PropagationResponse{Addresses: missings})
+	if err != nil {
+		return err
+	}
+
+	resp, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+
+	err = o.Overlay.storeIdentities(resp.GetIdentities(), agg)
+	if err != nil {
+		return fmt.Errorf("couldn't store the identities: %v", err)
+	}
 
 	return nil
 }

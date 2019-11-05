@@ -7,8 +7,6 @@ import "google/protobuf/any.proto";
 service Overlay {
     rpc echo(EchoMessage) returns (EchoMessage) {}
 
-    rpc requestIdentities(IdentityRequest) returns (IdentityResponse) {}
-
     rpc identity(PropagationRequest) returns (PropagationResponse) {}
 
     rpc aggregate(stream PropagationRequest) returns (stream PropagationResponse) {}
@@ -24,11 +22,6 @@ message Identity {
     bytes signature = 3;
 }
 
-message IdentityRequest {
-    string protocol = 1;
-    repeated string addresses = 2;
-}
-
 message IdentityResponse {
     repeated Identity identities = 1;
 }
@@ -42,10 +35,12 @@ message PropagationRequest {
     string protocol = 1;
     Tree tree = 2;
     google.protobuf.Any message = 3;
+    repeated Identity identities = 4;
 }
 
 message PropagationResponse {
     google.protobuf.Any message = 1;
+    repeated string addresses = 2;
 }
 
 message TestMessage {
