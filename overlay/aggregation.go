@@ -4,7 +4,6 @@ import (
 	context "context"
 	"errors"
 	fmt "fmt"
-	"log"
 	"time"
 
 	proto "github.com/golang/protobuf/proto"
@@ -114,7 +113,7 @@ func (o *Overlay) Aggregate(name string, ro Roster, in proto.Message) (proto.Mes
 			return nil, fmt.Errorf("couldn't store the identities: %v", err)
 		}
 
-		log.Printf("Leader stored %d identities\n", len(idents))
+		Logger.Debugf("Leader stored %d identities", len(idents))
 	}
 
 	msg, err := ptypes.MarshalAny(in)

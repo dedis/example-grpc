@@ -9,7 +9,6 @@ import (
 	"crypto/x509"
 	"errors"
 	fmt "fmt"
-	"log"
 	"math/big"
 	"net"
 	"net/http"
@@ -18,12 +17,27 @@ import (
 	proto "github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes"
 	"github.com/improbable-eng/grpc-web/go/grpcweb"
+	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 )
 
 //go:generate protoc -I ./ --go_out=plugins=grpc:./ ./overlay.proto
+
+// Logger is a globally available log instance that the overlay is using
+// for logging.
+var Logger = logrus.New()
+
+func init() {
+	Logger.SetLevel(logrus.DebugLevel)
+	Logger.SetFormatter(&logrus.TextFormatter{
+		EnvironmentOverrideColors: true,
+		DisableColors:             false,
+		DisableTimestamp:          false,
+		FullTimestamp:             true,
+	})
+}
 
 // Peer is a public identity for a given node.
 type Peer struct {
@@ -93,7 +107,11 @@ type Overlay struct {
 
 // NewOverlay returns a new overlay.
 func NewOverlay(addr string) *Overlay {
-	cert := makeCertificate()
+	cert, err := makeCertificate()
+	if err != nil {
+		Logger.Panic(err)
+	}
+
 	srv := grpc.NewServer()
 
 	overlay := &Overlay{
@@ -148,9 +166,9 @@ func (o *Overlay) Propagate(in *PropagationRequest, addr string, fn PropagateFnG
 
 		resp, err := fn(client)
 		if err != nil {
-			log.Printf("Error: %+v\n", err)
+			Logger.Debugf("Error: %v\n", err)
 			// If the client is not responsive, we contact its children directly.
-			log.Printf("Couldn't contact [%s]. Taking care of its children.\n", children[i])
+			Logger.Warnf("Couldn't contact [%s]. Taking care of its children.", children[i])
 			childReplies, err := o.Propagate(in, children[i], fn)
 			if err != nil {
 				return nil, err
@@ -199,7 +217,7 @@ func (o *Overlay) getConnections(addrs []string) []*grpc.ClientConn {
 	for _, addr := range addrs {
 		conn, err := o.getConnection(addr)
 		if err != nil {
-			log.Printf("couldn't open the connection: %+v", err)
+			Logger.Errorf("couldn't open the connection: %+v", err)
 		} else {
 			// Add the neighbour only if we can dial.
 			peers = append(peers, conn)
@@ -217,7 +235,7 @@ func (o *Overlay) Serve() error {
 
 	o.listener = lis
 
-	log.Printf("Server [%v] is starting...\n", lis.Addr())
+	Logger.Infof("Server [%v] is starting...\n", lis.Addr())
 	close(o.StartChan)
 
 	wrapped := grpcweb.WrapServer(o.Server)
@@ -244,7 +262,7 @@ func (o *Overlay) Serve() error {
 		}
 	}
 
-	log.Printf("Server [%v] has stopped...\n", lis.Addr())
+	Logger.Infof("Server [%v] has stopped...\n", lis.Addr())
 
 	return nil
 }
@@ -284,10 +302,10 @@ type overlayService struct {
 	Overlay *Overlay
 }
 
-func makeCertificate() *tls.Certificate {
+func makeCertificate() (*tls.Certificate, error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 	if err != nil {
-		log.Fatalf("Couldn't generate the private key: %+v", err)
+		return nil, fmt.Errorf("Couldn't generate the private key: %+v", err)
 	}
 
 	tmpl := &x509.Certificate{
@@ -303,17 +321,17 @@ func makeCertificate() *tls.Certificate {
 
 	buf, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
 	if err != nil {
-		log.Fatalf("Couldn't create the certificate: %+v", err)
+		return nil, fmt.Errorf("Couldn't create the certificate: %+v", err)
 	}
 
 	cert, err := x509.ParseCertificate(buf)
 	if err != nil {
-		log.Fatalf("Couldn't parse the certificate: %+v", err)
+		return nil, fmt.Errorf("Couldn't parse the certificate: %+v", err)
 	}
 
 	return &tls.Certificate{
 		Certificate: [][]byte{buf},
 		PrivateKey:  priv,
 		Leaf:        cert,
-	}
+	}, nil
 }
