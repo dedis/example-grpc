@@ -23,23 +23,27 @@ node.
 
 ## Architecture
 
-The idea is to have services that can use the overlay to run protocols like
-the aggregation or the collection. The service provides only the processor
-for the protocol but the overlay takes care of sending the messages around.
+The overlay is built on top of gRPC. It provides features to create protocols
+based on multiple interfaces. The first available protocol is the aggregation
+that will contact a roster of nodes and ask them for a specific value defined
+by the protocol implementation. It will then gather and merge the responses to
+the root.
 
-Clients would only need to make requests to the services.
+TLS is configured with self-signed certificates which means that the public key
+needs to be passed around the roster so that each node has the certificate of
+the neighbours it wants to communicate with. TLS is configured to ask for a
+certificate but anonymous client can still make requests. Some logic requires
+a client authentication like for the protocols.
 
-```
-  ----------------------------------------------------        -----------------------
-  | OVERLAY                                          |        | Service Count       |
-  |                                                  |--------|                     |
-  | ----------------------  ------------------------ |        |                     |
-  | | AGGREGATION        |  | COLLECTION           | |        -----------------------
-  | |   PROTOCOL         |  |    PROTOCOL          | |     --------          |
-  | |                    |  |                      | |-----| ...  |          |
-  | ----------------------  ------------------------ |     --------          |
-  ----------------------------------------------------          |            |
-                                                                -----------Client
+A wrapper is used to enable Web API compatibility and the requests are made on
+the same port than P2P requests but it is limited according to [gRPC-web](https://github.com/improbable-eng/grpc-web).
 
+### Aggregation with identity
 
-```
+The aggregation protocol will provide the protocol identities when the dedicated
+interface is implemented. It is up to the protocol implementation to cache them.
+The overlay insures that all the identities required are present before calling
+`Process`.
+
+TODO: what to do when a node is offline ? Continue with a truncated
+roster ?
