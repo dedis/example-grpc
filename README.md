@@ -5,6 +5,11 @@ for the network layer.
 
 ## How to
 
+Install the required protoc-gen-go plugin with:
+```
+make protoc-gen-go
+```
+
 Generate code from proto files:
 ```
 make generate

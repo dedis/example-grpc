@@ -7,6 +7,7 @@ require (
 	github.com/gorilla/websocket v1.4.1 // indirect
 	github.com/improbable-eng/grpc-web v0.11.0
 	github.com/rs/cors v1.7.0 // indirect
+	github.com/sirupsen/logrus v1.4.2
 	github.com/stretchr/testify v1.4.0
 	go.dedis.ch/kyber/v4 v4.0.0-pre2
 	golang.org/x/net v0.0.0-20191101175033-0deb6923b6d9
