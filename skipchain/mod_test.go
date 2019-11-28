@@ -1,7 +1,10 @@
 package skipchain
 
 import (
+	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/dedis/example-grpc/overlay"
 	"github.com/stretchr/testify/require"
@@ -13,7 +16,7 @@ func TestSkipchain_Signing(t *testing.T) {
 	servers := make([]*overlay.Overlay, n)
 	skipchains := make([]*Skipchain, n)
 	for i := range servers {
-		o := overlay.NewOverlay("localhost:0")
+		o := overlay.NewOverlay(fmt.Sprintf("overlay-%d", i), "localhost:0")
 		servers[i] = o
 		skipchains[i] = NewSkipchain(o)
 
@@ -36,7 +39,8 @@ func TestSkipchain_Signing(t *testing.T) {
 		}
 	}
 
-	sig, err := skipchains[0].Sign([]byte("deadbeef"), roster)
+	ctx := context.Background()
+	sig, err := skipchains[0].Sign(ctx, []byte("deadbeef"), roster)
 	require.NoError(t, err)
 	require.NotNil(t, sig)
 
@@ -47,7 +51,10 @@ func TestSkipchain_Signing(t *testing.T) {
 	// It should still work with one node down.
 	servers[2].GracefulStop()
 
-	sig, err = skipchains[1].Sign([]byte("deadbeef"), roster)
+	sig, err = skipchains[1].Sign(ctx, []byte("deadbeef"), roster)
 	require.NoError(t, err)
 	require.NotNil(t, sig)
+
+	// wait for spans to reach
+	time.Sleep(2 * time.Second)
 }

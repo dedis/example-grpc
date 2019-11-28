@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"errors"
 	fmt "fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -17,7 +18,13 @@ import (
 	proto "github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes"
 	"github.com/improbable-eng/grpc-web/go/grpcweb"
+	otgrpc "github.com/opentracing-contrib/go-grpc"
+	"github.com/opentracing/opentracing-go"
 	"github.com/sirupsen/logrus"
+	"github.com/uber/jaeger-client-go"
+	jaegercfg "github.com/uber/jaeger-client-go/config"
+	jaegerlog "github.com/uber/jaeger-client-go/log"
+	"github.com/uber/jaeger-lib/metrics"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
@@ -103,25 +110,53 @@ type Overlay struct {
 	neighbours map[string]Peer
 
 	aggregators map[string]Aggregation
+
+	Tracer       opentracing.Tracer
+	tracerCloser io.Closer
 }
 
 // NewOverlay returns a new overlay.
-func NewOverlay(addr string) *Overlay {
+func NewOverlay(name, addr string) *Overlay {
 	cert, err := makeCertificate()
 	if err != nil {
 		Logger.Panic(err)
 	}
 
-	srv := grpc.NewServer()
+	cfg := jaegercfg.Configuration{
+		ServiceName: name,
+		Sampler: &jaegercfg.SamplerConfig{
+			Type:  jaeger.SamplerTypeConst,
+			Param: 1,
+		},
+		Reporter: &jaegercfg.ReporterConfig{
+			LogSpans:          true,
+			CollectorEndpoint: "http://localhost:14268/api/traces",
+		},
+	}
+
+	jLogger := jaegerlog.StdLogger
+	jMetricsFactory := metrics.NullFactory
+
+	tracer, closer, err := cfg.NewTracer(jaegercfg.Logger(jLogger), jaegercfg.Metrics(jMetricsFactory))
+	if err != nil {
+		Logger.Panic(err)
+	}
+
+	srv := grpc.NewServer(
+		grpc.UnaryInterceptor(otgrpc.OpenTracingServerInterceptor(tracer)),
+		grpc.StreamInterceptor(otgrpc.OpenTracingStreamServerInterceptor(tracer)),
+	)
 
 	overlay := &Overlay{
-		Server:      srv,
-		cert:        cert,
-		addr:        addr,
-		listener:    nil,
-		StartChan:   make(chan struct{}),
-		neighbours:  make(map[string]Peer),
-		aggregators: make(map[string]Aggregation),
+		Server:       srv,
+		cert:         cert,
+		addr:         addr,
+		listener:     nil,
+		StartChan:    make(chan struct{}),
+		neighbours:   make(map[string]Peer),
+		aggregators:  make(map[string]Aggregation),
+		Tracer:       tracer,
+		tracerCloser: closer,
 	}
 
 	RegisterOverlayServer(srv, &overlayService{Overlay: overlay})
@@ -204,7 +239,11 @@ func (o *Overlay) getConnection(addr string) (*grpc.ClientConn, error) {
 	})
 
 	// Connecting using TLS and the distant server certificate as the root.
-	conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(ta))
+	conn, err := grpc.Dial(addr,
+		grpc.WithTransportCredentials(ta),
+		grpc.WithUnaryInterceptor(otgrpc.OpenTracingClientInterceptor(o.Tracer)),
+		grpc.WithStreamInterceptor(otgrpc.OpenTracingStreamClientInterceptor(o.Tracer)),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't dial: %v", err)
 	}
@@ -271,6 +310,10 @@ func (o *Overlay) Serve() error {
 func (o *Overlay) GracefulStop() error {
 	// Close current opened connection in the gRPC server.
 	o.Server.GracefulStop()
+	err := o.tracerCloser.Close()
+	if err != nil {
+		return err
+	}
 
 	return o.srv.Shutdown(context.Background())
 }

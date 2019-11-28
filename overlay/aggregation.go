@@ -80,7 +80,7 @@ type AggregationWithIdentity interface {
 
 // Aggregate starts a new aggregation protocol that will gather a response from
 // every node in the roster. The message contains the parameter of the protocol.
-func (o *Overlay) Aggregate(name string, ro Roster, in proto.Message) (proto.Message, error) {
+func (o *Overlay) Aggregate(ctx context.Context, name string, ro Roster, in proto.Message) (proto.Message, error) {
 	agg := o.aggregators[name]
 	if agg == nil {
 		return nil, errors.New("aggregation not found")
@@ -103,7 +103,7 @@ func (o *Overlay) Aggregate(name string, ro Roster, in proto.Message) (proto.Mes
 		}
 
 		// Gather the different identities involved.
-		idents, err := o.sendIdentityRequest(req, ident)
+		idents, err := o.sendIdentityRequest(ctx, req, ident)
 		if err != nil {
 			return nil, fmt.Errorf("couldn't request the identities: %v", err)
 		}
@@ -127,7 +127,7 @@ func (o *Overlay) Aggregate(name string, ro Roster, in proto.Message) (proto.Mes
 		Message:  msg,
 	}
 
-	res, err := o.sendAggregateRequest(req, agg)
+	res, err := o.sendAggregateRequest(ctx, req, agg)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't aggregate: %v", err)
 	}
@@ -151,12 +151,13 @@ func (o *Overlay) storeIdentities(idents []*Identity, agg AggregationWithIdentit
 	return nil
 }
 
-func (o *Overlay) sendIdentityRequest(in *PropagationRequest, ident proto.Message) ([]*Identity, error) {
+func (o *Overlay) sendIdentityRequest(ctx context.Context, in *PropagationRequest, ident proto.Message) ([]*Identity, error) {
 	replies, err := o.Propagate(in, o.listener.Addr().String(), func(cl OverlayClient) (*PropagationResponse, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx, cancel := context.WithTimeout(ctx, time.Second)
 		defer cancel()
 
-		return cl.Identity(ctx, in)
+		res, err := cl.Identity(ctx, in)
+		return res, err
 	})
 
 	idents := make([]*Identity, 0)
@@ -178,9 +179,9 @@ func (o *Overlay) sendIdentityRequest(in *PropagationRequest, ident proto.Messag
 	return idents, nil
 }
 
-func (o *Overlay) sendAggregateRequest(msg *PropagationRequest, agg Aggregation) (proto.Message, error) {
+func (o *Overlay) sendAggregateRequest(ctx context.Context, msg *PropagationRequest, agg Aggregation) (proto.Message, error) {
 	replies, err := o.Propagate(msg, o.listener.Addr().String(), func(cl OverlayClient) (*PropagationResponse, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
 		stream, err := cl.Aggregate(ctx)
@@ -250,7 +251,7 @@ func (o *overlayService) Identity(ctx context.Context, in *PropagationRequest) (
 		return nil, fmt.Errorf("couldn't generate the identity: %v", err)
 	}
 
-	replies, err := o.Overlay.sendIdentityRequest(in, ident)
+	replies, err := o.Overlay.sendIdentityRequest(ctx, in, ident)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't send the identity request: %v", err)
 	}
@@ -287,7 +288,7 @@ func (o *overlayService) Aggregate(stream Overlay_AggregateServer) error {
 		}
 	}
 
-	res, err := o.Overlay.sendAggregateRequest(in, agg)
+	res, err := o.Overlay.sendAggregateRequest(stream.Context(), in, agg)
 	if err != nil {
 		return fmt.Errorf("couldn't send the aggregate request: %v", err)
 	}
@@ -298,8 +299,7 @@ func (o *overlayService) Aggregate(stream Overlay_AggregateServer) error {
 	}
 
 	err = stream.Send(&PropagationResponse{Message: r})
-
-	return nil
+	return err
 }
 
 func (o *overlayService) requestMissingIdentities(stream Overlay_AggregateServer, addrs []string, agg AggregationWithIdentity) error {

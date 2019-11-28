@@ -1,9 +1,11 @@
 package skipchain
 
 import (
+	"context"
 	fmt "fmt"
 
 	"github.com/dedis/example-grpc/overlay"
+	"github.com/opentracing/opentracing-go"
 	"go.dedis.ch/kyber/v4"
 	"go.dedis.ch/kyber/v4/pairing"
 	"go.dedis.ch/kyber/v4/sign"
@@ -68,8 +70,11 @@ func (sc *Skipchain) GetAggregatePublicKey(ro overlay.Roster) (kyber.Point, erro
 }
 
 // Sign requests a signature by the roster.
-func (sc *Skipchain) Sign(msg []byte, ro overlay.Roster) ([]byte, error) {
-	agg, err := sc.overlay.Aggregate(bdnCoSi, ro, &SigningRequest{Message: msg})
+func (sc *Skipchain) Sign(ctx context.Context, msg []byte, ro overlay.Roster) ([]byte, error) {
+	span, ctx := opentracing.StartSpanFromContextWithTracer(ctx, sc.overlay.Tracer, "skipchainSign")
+	defer span.Finish()
+
+	agg, err := sc.overlay.Aggregate(ctx, bdnCoSi, ro, &SigningRequest{Message: msg})
 	if err != nil {
 		return nil, fmt.Errorf("couldn't aggregate: %v", err)
 	}
