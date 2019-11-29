@@ -56,5 +56,5 @@ func TestSkipchain_Signing(t *testing.T) {
 	require.NotNil(t, sig)
 
 	// wait for spans to reach
-	time.Sleep(2 * time.Second)
+	time.Sleep(3 * time.Second)
 }

@@ -4,6 +4,7 @@ import (
 	context "context"
 	"errors"
 	fmt "fmt"
+	"io"
 	"time"
 
 	proto "github.com/golang/protobuf/proto"
@@ -217,7 +218,14 @@ func (o *Overlay) sendAggregateRequest(ctx context.Context, msg *PropagationRequ
 
 				stream.Send(&PropagationRequest{Identities: replies})
 			} else {
-				return resp, nil
+				// Clean way to close the stream. Trace shows an error that the stream
+				// was closed because the context was cancelled if we don't do this.
+				stream.CloseSend()
+				_, err := stream.Recv()
+				if err == io.EOF {
+					return resp, nil
+				}
+				return nil, err
 			}
 		}
 	})
